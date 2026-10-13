@@ -407,6 +407,8 @@
     // Date-only strings like 2026-10-31 parse as UTC midnight; show them as a date, not a time.
     var dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(String(value).trim());
     if (dateOnly) d = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    // A date cell in the Sheet arrives as midnight; treat that as a date with no time.
+    if (!dateOnly && d.getHours() === 0 && d.getMinutes() === 0) dateOnly = true;
     var opts = (dateOnly || short) ? { dateStyle: 'medium' } : { dateStyle: 'medium', timeStyle: 'short' };
     return d.toLocaleString(undefined, opts);
   }
