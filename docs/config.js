@@ -9,6 +9,9 @@
 // Leave COURSES empty to run the page in demo mode (fake in-browser data, nothing saved).
 window.GROUP_SIGNUP_CONFIG = {
   COURSES: {
-    // 'pol2230': { url: 'https://script.google.com/macros/s/.../exec', label: 'POL 2230 — Canadian Politics (Fall 2026)' }
+    'pol3540': {
+      url: 'https://script.google.com/macros/s/AKfycbx--0uynugqdhWEbQDrxdEfMvLaCcecNZncf0QaRBgAknJ3lHIrAUGIktuoutd8Txuzxw/exec',
+      label: 'POL 3540 — Politics of Immigration and Citizenship (Fall 2026)'
+    }
   }
 };

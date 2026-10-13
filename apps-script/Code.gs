@@ -36,12 +36,12 @@ var SHEETS = {
 var RESERVED_SHEET_NAMES = Object.keys(SHEETS).map(function (k) { return SHEETS[k]; });
 
 var DEFAULT_COURSE = {
-  COURSE_NAME: 'Introduction to Something',
-  COURSE_CODE: 'ABC 1000',
+  COURSE_NAME: 'Politics of Immigration and Citizenship',
+  COURSE_CODE: 'POL 3540',
   YEAR:        '2026',
   TERM:        'Fall',
   SECTION:     '001',
-  PROFESSOR:   'Professor Name'
+  PROFESSOR:   'Zack Taylor'
 };
 
 var DEFAULT_SETTINGS = {
