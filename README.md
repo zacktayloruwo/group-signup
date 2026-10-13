@@ -111,6 +111,11 @@ script deployment; the site just lists them all.
    - `SITE_URL` is your GitHub Pages URL including the course key, e.g.
      `https://you.github.io/signup/?c=pol2230`. Filled in after step 4. Emailed
      links are built from it, so find-your-name does not work until it is set.
+   - `EMAIL_SENDER_NAME`, `EMAIL_REPLY_TO`, `EMAIL_SUBJECT`, `EMAIL_SIGNATURE`
+     customise the link email. See "How the email is sent" below.
+
+   If you set up the Sheet with an older version of the script, run
+   `addMissingSettings()` from the Apps Script editor to append any new keys.
 
 ### 2. Describe the assignments and their groups
 
@@ -182,6 +187,29 @@ If you would rather send links yourself, run `generateTokens()` and then
 holds each student's personal link for a mail merge, or run `sendInvites()` to
 email them from the Google account that owns the script. If you use open
 enrollment, just share the course URL.
+
+## How the email is sent
+
+Link emails go out through Gmail from the Google account that owns the script,
+because the web app runs as you. The From address is that account; Google does
+not let a script send as an arbitrary address. What you can set, all in the
+Settings sheet:
+
+| Key | Effect | Default |
+|---|---|---|
+| `EMAIL_SENDER_NAME` | Display name on the From line, e.g. "Zack Taylor" or "POL 3540 Course Team". | `PROFESSOR` from the Course sheet |
+| `EMAIL_REPLY_TO` | Where replies go, e.g. your university address. | the Gmail account |
+| `EMAIL_SUBJECT` | Subject line. | "`<code> <course name>`: your group signup link" |
+| `EMAIL_SIGNATURE` | Closing lines. Line breaks in the cell are kept (Ctrl+Enter or Cmd+Enter inserts one). | `PROFESSOR` and the course title |
+
+The To line shows the student's name from the Roster with their address. The
+body says who the email is for, gives the link, and notes that it should not
+be shared.
+
+If you want the From address itself to be your university address, add it in
+Gmail under **Settings ▸ Accounts ▸ Send mail as**, then ask for the script to
+use `GmailApp` with that alias. That needs a broader Gmail permission on the
+script, so it is not the default.
 
 ## Day to day
 

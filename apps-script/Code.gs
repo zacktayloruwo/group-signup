@@ -8,7 +8,8 @@
  *
  * Sheets in the course workbook (created by setup()):
  *   Course       — key | value   (COURSE_NAME, COURSE_CODE, YEAR, TERM, SECTION, PROFESSOR)
- *   Settings     — key | value   (ADMIN_KEY, SIGNUP_OPEN, NAME_DISPLAY, OPEN_ENROLLMENT, SELF_SERVICE_LINKS, SITE_URL)
+ *   Settings     — key | value   (ADMIN_KEY, SIGNUP_OPEN, NAME_DISPLAY, OPEN_ENROLLMENT, SELF_SERVICE_LINKS,
+ *                                 SITE_URL, EMAIL_SENDER_NAME, EMAIL_REPLY_TO, EMAIL_SUBJECT, EMAIL_SIGNATURE)
  *   Assignments  — id | name | due | signup_closes | open | instructions
  *   <one tab per assignment, named by its id> — id | name | slots | description
  *   Roster       — email | name | token | created | invite_link
@@ -17,6 +18,7 @@
  *
  * Instructor-only functions (run from the Apps Script editor):
  *   setup()                create the sheets with headers and sample rows
+ *   addMissingSettings()   add Settings rows introduced by newer versions of this script
  *   addAssignmentSheets()  create a groups tab for every Assignments row that lacks one
  *   generateTokens()       fill in a token for every Roster row that lacks one
  *   writeInviteLinks()     fill the invite_link column from SITE_URL + token
@@ -51,7 +53,11 @@ var DEFAULT_SETTINGS = {
   NAME_DISPLAY:    'initial',     // "full" => "Ada Lovelace"; "initial" => "Ada L."
   OPEN_ENROLLMENT: 'false',       // "true" lets students not on the Roster register themselves
   SELF_SERVICE_LINKS: 'true',     // "true" lets students pick their name and get their link emailed to them
-  SITE_URL:        ''             // e.g. https://yourname.github.io/group-signup/?c=abc1000
+  SITE_URL:        '',            // e.g. https://yourname.github.io/group-signup/?c=abc1000
+  EMAIL_SENDER_NAME: '',          // display name on the From line; blank = PROFESSOR from the Course sheet
+  EMAIL_REPLY_TO:  '',            // replies go here instead of the Gmail account that owns the script
+  EMAIL_SUBJECT:   '',            // blank = "<code> <course name>: your group signup link"
+  EMAIL_SIGNATURE: ''             // closing lines of the email; blank = PROFESSOR and course. Line breaks are kept.
 };
 
 var LINK_REQUESTS_PER_DAY = 5;    // per student, to stop the public page being used to spam an inbox
@@ -558,6 +564,17 @@ function ensureSheet(ss, name, headers, sampleRows) {
   return sheet;
 }
 
+/** Append any Settings keys added in newer versions of this script, with their defaults. Safe to re-run. */
+function addMissingSettings() {
+  var sheet = getSheet(SHEETS.SETTINGS);
+  var present = readRows(SHEETS.SETTINGS).map(function (r) { return String(r[0] || '').trim(); });
+  var added = 0;
+  Object.keys(DEFAULT_SETTINGS).forEach(function (k) {
+    if (present.indexOf(k) < 0) { sheet.appendRow([k, k === 'ADMIN_KEY' ? newToken() : DEFAULT_SETTINGS[k]]); added++; }
+  });
+  Logger.log('Added ' + added + ' setting(s).');
+}
+
 /** Give every Roster row without a token a fresh one. */
 function generateTokens() {
   var sheet = getSheet(SHEETS.ROSTER);
@@ -604,17 +621,23 @@ function inviteLink(db, token) {
 }
 
 function sendLinkEmail(db, entry) {
-  var title = db.course.COURSE_CODE + ' ' + db.course.COURSE_NAME;
+  var c = db.course, s = db.settings;
+  var title = c.COURSE_CODE + ' ' + c.COURSE_NAME;
   var link = inviteLink(db, entry.token);
-  MailApp.sendEmail({
-    to: entry.email,
-    subject: title + ': your group signup link',
+  var signature = s.EMAIL_SIGNATURE || (c.PROFESSOR + '\n' + title);
+  var message = {
+    to: entry.name ? '"' + entry.name.replace(/["<>]/g, '') + '" <' + entry.email + '>' : entry.email,
+    name: s.EMAIL_SENDER_NAME || c.PROFESSOR,
+    subject: s.EMAIL_SUBJECT || (title + ': your group signup link'),
     htmlBody: '<p>Hi ' + escapeHtml(entry.name) + ',</p>' +
       '<p>Use this personal link to choose your groups for ' + escapeHtml(title) + ':</p>' +
       '<p><a href="' + link + '">' + link + '</a></p>' +
       '<p>It signs you in on whichever device you open it on. Please do not share it — it identifies you.</p>' +
-      '<p>If you did not request this, you can ignore it.</p>'
-  });
+      '<p>If you did not request this, you can ignore it.</p>' +
+      '<p>' + escapeHtml(signature).replace(/\n/g, '<br>') + '</p>'
+  };
+  if (s.EMAIL_REPLY_TO) message.replyTo = s.EMAIL_REPLY_TO;
+  MailApp.sendEmail(message);
 }
 
 /** Returns an error message if this student has asked for too many links, else ''. */
