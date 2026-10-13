@@ -7,7 +7,7 @@
   var DEMO = Object.keys(COURSES).length === 0;
 
   var $ = function (sel) { return document.querySelector(sel); };
-  var state = { course: null, settings: null, assignments: [], me: null };
+  var state = { course: null, settings: null, assignments: [], me: null, roster: null };
   var courseKey = '';
   var apiUrl = '';
   var token = '';
@@ -190,6 +190,7 @@
       box.appendChild(h);
       box.appendChild(p);
       if (s.openEnrollment) box.appendChild(personalLink());
+      box.appendChild(accountActions());
       return;
     }
 
@@ -211,9 +212,137 @@
       return;
     }
 
+    if (s.selfServiceLinks) {
+      box.appendChild(findYourName());
+      return;
+    }
+
     var need = document.createElement('p');
     need.textContent = 'To join a group, open the personal link your instructor emailed you. You can browse the groups in the meantime.';
     box.appendChild(need);
+  }
+
+  function accountActions() {
+    var wrap = document.createElement('p');
+    wrap.className = 'account-actions hint';
+    var out = document.createElement('button');
+    out.type = 'button';
+    out.className = 'link-button';
+    out.textContent = 'Not you? Sign out on this device';
+    out.addEventListener('click', function () { setToken(''); notify(''); load(); });
+    wrap.appendChild(out);
+    {
+      wrap.appendChild(document.createTextNode(' · '));
+      var reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'link-button';
+      reset.textContent = 'Email me a fresh link';
+      reset.title = 'Replaces your link. Use this if you shared it by mistake or want to sign in elsewhere.';
+      reset.addEventListener('click', function () {
+        if (!window.confirm('Email you a new personal link? Your current link will stop working, and you will be signed out on this device until you open the new one.')) return;
+        reset.disabled = true;
+        api({ action: 'resetToken', token: token })
+          .then(function (data) {
+            setToken('');
+            load();
+            notify('A new link was emailed to ' + data.sentTo + '. Open it to sign in again. Your group choices are unchanged.', 'success');
+          })
+          .catch(function (err) { notify(err.message, 'error'); reset.disabled = false; });
+      });
+      wrap.appendChild(reset);
+    }
+    return wrap;
+  }
+
+  function findYourName() {
+    var wrap = document.createElement('div');
+    wrap.className = 'find-name';
+    wrap.innerHTML =
+      '<h2>Find your name</h2>' +
+      '<p class="hint">Pick your name and we will email a sign-in link to the address your instructor has on file. ' +
+      'Already have a link? Just open it.</p>' +
+      '<label class="visually-hidden" for="name-search">Search names</label>' +
+      '<input id="name-search" type="search" placeholder="Start typing your name" autocomplete="off">' +
+      '<ul class="roster-list" aria-label="Names on the roster"></ul>' +
+      '<div class="confirm-send" hidden></div>';
+    var input = wrap.querySelector('input');
+    var list = wrap.querySelector('ul');
+    var confirmBox = wrap.querySelector('.confirm-send');
+
+    function renderList() {
+      list.textContent = '';
+      if (!state.roster) {
+        var li = document.createElement('li');
+        li.className = 'empty';
+        li.textContent = 'Loading names…';
+        list.appendChild(li);
+        return;
+      }
+      var q = input.value.trim().toLowerCase();
+      var matches = state.roster.filter(function (r) { return !q || r.name.toLowerCase().indexOf(q) >= 0; });
+      if (!matches.length) {
+        var none = document.createElement('li');
+        none.className = 'empty';
+        none.textContent = 'No names match. If you are not listed, ask the instructor to add you.';
+        list.appendChild(none);
+        return;
+      }
+      matches.forEach(function (r) {
+        var li = document.createElement('li');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = r.name;
+        btn.addEventListener('click', function () { askToSend(r); });
+        li.appendChild(btn);
+        list.appendChild(li);
+      });
+    }
+
+    function askToSend(r) {
+      confirmBox.hidden = false;
+      confirmBox.textContent = '';
+      var text = document.createElement('p');
+      text.textContent = 'Send a sign-in link to the email on file for ' + r.name + '?';
+      var row = document.createElement('div');
+      row.className = 'row';
+      var send = document.createElement('button');
+      send.type = 'button';
+      send.className = 'button primary';
+      send.textContent = 'Send my link';
+      var cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', function () { confirmBox.hidden = true; });
+      send.addEventListener('click', function () {
+        send.disabled = true;
+        api({ action: 'sendLink', rosterId: r.id })
+          .then(function (data) {
+            confirmBox.textContent = '';
+            var done = document.createElement('p');
+            done.textContent = 'Sent to ' + data.sentTo + '. Open the link in that email on this device to sign in. ' +
+              'If it has not arrived in a minute or two, check your spam folder.';
+            confirmBox.appendChild(done);
+            list.hidden = true;
+            input.hidden = true;
+          })
+          .catch(function (err) { notify(err.message, 'error'); send.disabled = false; });
+      });
+      row.appendChild(send);
+      row.appendChild(cancel);
+      confirmBox.appendChild(text);
+      confirmBox.appendChild(row);
+      confirmBox.scrollIntoView({ block: 'nearest' });
+    }
+
+    input.addEventListener('input', renderList);
+    renderList();
+    if (!state.roster) {
+      api({ action: 'roster' })
+        .then(function (data) { state.roster = data.roster; renderList(); })
+        .catch(function (err) { notify(err.message, 'error'); });
+    }
+    return wrap;
   }
 
   function registerForm() {
@@ -563,7 +692,7 @@
   function demoApi(payload) {
     var db = demoApi.db || (demoApi.db = {
       course: { name: 'Canadian Politics', code: 'POL 2230', year: '2026', term: 'Fall', section: '001', professor: 'Prof. Example' },
-      settings: { signupOpen: true, openEnrollment: true },
+      settings: { signupOpen: true, openEnrollment: false, selfServiceLinks: true },
       assignments: [
         { id: 'presentations', name: 'Seminar presentations', due: '2026-11-06', signupCloses: '2026-10-30T23:59', open: true,
           instructions: 'Each group presents for 15 minutes on its assigned week.\nSign up for one slot. Groups of up to four.',
@@ -621,11 +750,24 @@
     function ok(extra) { return Promise.resolve(Object.assign({ ok: true, course: db.course, settings: db.settings, assignments: assignments() }, extra)); }
     function fail(msg) { return Promise.reject(new Error(msg)); }
 
+    function mask(e) { return e.charAt(0) + '***' + e.slice(e.indexOf('@')); }
     var r = who(payload.token);
     var a = db.assignments.filter(function (x) { return x.id === payload.assignmentId; })[0];
     switch (payload.action) {
       case 'state':
         return ok({ me: r ? me(r) : null });
+      case 'roster':
+        return ok({ roster: db.roster.map(function (x) { return { id: 'id-' + x.email, name: x.name }; })
+          .sort(function (p, q) { return p.name.localeCompare(q.name); }) });
+      case 'sendLink': {
+        var entry = db.roster.filter(function (x) { return 'id-' + x.email === payload.rosterId; })[0];
+        if (!entry) return fail('That name is not on the roster.');
+        return ok({ sentTo: mask(entry.email) + ' (demo: no email is really sent; use ?t=' + entry.token + ')' });
+      }
+      case 'resetToken':
+        if (!r) return fail('Your link is not recognised (demo).');
+        r.token = 'demo-' + Math.random().toString(36).slice(2, 8);
+        return ok({ sentTo: mask(r.email) + ' (demo: new token ' + r.token + ')' });
       case 'register': {
         var email = String(payload.email || '').trim().toLowerCase();
         if (db.roster.some(function (x) { return x.email === email; })) return fail('That email is already registered (demo).');

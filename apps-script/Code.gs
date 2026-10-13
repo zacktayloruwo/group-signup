@@ -8,7 +8,7 @@
  *
  * Sheets in the course workbook (created by setup()):
  *   Course       — key | value   (COURSE_NAME, COURSE_CODE, YEAR, TERM, SECTION, PROFESSOR)
- *   Settings     — key | value   (ADMIN_KEY, SIGNUP_OPEN, NAME_DISPLAY, OPEN_ENROLLMENT, SITE_URL)
+ *   Settings     — key | value   (ADMIN_KEY, SIGNUP_OPEN, NAME_DISPLAY, OPEN_ENROLLMENT, SELF_SERVICE_LINKS, SITE_URL)
  *   Assignments  — id | name | due | signup_closes | open | instructions
  *   <one tab per assignment, named by its id> — id | name | slots | description
  *   Roster       — email | name | token | created | invite_link
@@ -20,7 +20,8 @@
  *   addAssignmentSheets()  create a groups tab for every Assignments row that lacks one
  *   generateTokens()       fill in a token for every Roster row that lacks one
  *   writeInviteLinks()     fill the invite_link column from SITE_URL + token
- *   sendInvites()          email each student their personal link (optional)
+ *   sendInvites()          email each student their personal link (optional; students can
+ *                          also request their own link from the site when SELF_SERVICE_LINKS is true)
  *   backupToDropbox()      copy a CSV snapshot to Dropbox (optional)
  */
 
@@ -49,8 +50,12 @@ var DEFAULT_SETTINGS = {
   SIGNUP_OPEN:     'true',        // "false" freezes every assignment at once
   NAME_DISPLAY:    'initial',     // "full" => "Ada Lovelace"; "initial" => "Ada L."
   OPEN_ENROLLMENT: 'false',       // "true" lets students not on the Roster register themselves
+  SELF_SERVICE_LINKS: 'true',     // "true" lets students pick their name and get their link emailed to them
   SITE_URL:        ''             // e.g. https://yourname.github.io/group-signup/?c=abc1000
 };
+
+var LINK_REQUESTS_PER_DAY = 5;    // per student, to stop the public page being used to spam an inbox
+var LINK_REQUEST_COOLDOWN_MS = 60 * 1000;
 
 var ASSIGNMENT_HEADERS = ['id', 'name', 'due', 'signup_closes', 'open', 'instructions'];
 var GROUP_HEADERS = ['id', 'name', 'slots', 'description'];
@@ -87,6 +92,9 @@ function handleRequest(req) {
   try {
     switch (req.action) {
       case 'state':    return actionState(req);
+      case 'roster':   return actionRoster(req);
+      case 'sendLink': return withLock(function () { return actionSendLink(req); });
+      case 'resetToken': return withLock(function () { return actionResetToken(req); });
       case 'register': return withLock(function () { return actionRegister(req); });
       case 'join':     return withLock(function () { return actionJoin(req); });
       case 'leave':    return withLock(function () { return actionLeave(req); });
@@ -141,6 +149,57 @@ function actionRegister(req) {
   var out = publicState(db, findByToken(db, token));
   out.token = token;
   return out;
+}
+
+/** Names on the roster with opaque ids, so a student can find themselves. Never includes emails or tokens. */
+function actionRoster(req) {
+  var db = loadDb();
+  if (!isTrue(db.settings.SELF_SERVICE_LINKS)) return { ok: false, error: 'Self-service links are turned off for this course.' };
+  var roster = db.roster.map(function (r) { return { id: rosterId(r.email), name: r.name }; });
+  roster.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  return { ok: true, roster: roster };
+}
+
+/** Email a student their personal link, to the address the instructor has on file. */
+function actionSendLink(req) {
+  var db = loadDb();
+  if (!isTrue(db.settings.SELF_SERVICE_LINKS)) return { ok: false, error: 'Self-service links are turned off for this course.' };
+  if (!String(db.settings.SITE_URL || '').trim()) return { ok: false, error: 'The instructor has not set SITE_URL yet, so links cannot be emailed.' };
+
+  var id = String(req.rosterId || '').trim();
+  var entry = db.roster.filter(function (r) { return rosterId(r.email) === id; })[0];
+  if (!entry) return { ok: false, error: 'That name is not on the roster.' };
+
+  var limited = linkRequestLimit(entry.email);
+  if (limited) return { ok: false, error: limited };
+  if (MailApp.getRemainingDailyQuota() < 1) {
+    return { ok: false, error: 'The email limit for today has been reached. Ask the instructor to send your link.' };
+  }
+
+  if (!entry.token) {
+    entry.token = newToken();
+    getSheet(SHEETS.ROSTER).getRange(entry.row, 3).setValue(entry.token);
+  }
+  sendLinkEmail(db, entry);
+  appendLog(entry.email, '', 'sendlink', '', '');
+  return { ok: true, sentTo: maskEmail(entry.email) };
+}
+
+/** A signed-in student replaces their token (old links stop working) and gets the new link by email. */
+function actionResetToken(req) {
+  var db = loadDb();
+  var me = findByToken(db, req.token);
+  if (!me) return { ok: false, error: 'Your link is not recognised. Ask the instructor for a new one.' };
+  if (!String(db.settings.SITE_URL || '').trim()) return { ok: false, error: 'The instructor has not set SITE_URL yet, so links cannot be emailed.' };
+  if (MailApp.getRemainingDailyQuota() < 1) {
+    return { ok: false, error: 'The email limit for today has been reached. Try again tomorrow or ask the instructor.' };
+  }
+
+  me.token = newToken();
+  getSheet(SHEETS.ROSTER).getRange(me.row, 3).setValue(me.token);
+  sendLinkEmail(db, me);
+  appendLog(me.email, '', 'reset', '', '');
+  return { ok: true, sentTo: maskEmail(me.email) };
 }
 
 function actionJoin(req) {
@@ -243,8 +302,9 @@ function loadDb() {
     }).filter(function (g) { return g.id; });
   });
 
-  var roster = readRows(SHEETS.ROSTER).map(function (r) {
+  var roster = readRowsWithPositions(SHEETS.ROSTER).map(function (r, i) {
     return {
+      row: i + 2,
       email: normalizeEmail(r[0]),
       name: String(r[1] || '').trim(),
       token: String(r[2] || '').trim()
@@ -278,6 +338,11 @@ function readRows(name) {
   return values.slice(1).filter(function (r) {
     return r.some(function (c) { return c !== '' && c !== null && c !== undefined; });
   });
+}
+
+/** Like readRows but keeps blank rows so each row's position in the sheet is known. */
+function readRowsWithPositions(name) {
+  return getSheet(name).getDataRange().getValues().slice(1);
 }
 
 function getSheet(name) {
@@ -350,7 +415,8 @@ function publicSettings(db) {
   var s = db.settings;
   return {
     signupOpen: isTrue(s.SIGNUP_OPEN),
-    openEnrollment: isTrue(s.OPEN_ENROLLMENT)
+    openEnrollment: isTrue(s.OPEN_ENROLLMENT),
+    selfServiceLinks: isTrue(s.SELF_SERVICE_LINKS)
   };
 }
 
@@ -526,20 +592,42 @@ function writeInviteLinks() {
 function sendInvites() {
   var db = loadDb();
   writeInviteLinks();
-  var title = db.course.COURSE_CODE + ' ' + db.course.COURSE_NAME;
-  readRows(SHEETS.ROSTER).forEach(function (r) {
-    var email = normalizeEmail(r[0]);
-    var link = String(r[4] || '');
-    if (!email || !link) return;
-    MailApp.sendEmail({
-      to: email,
-      subject: title + ': your group signup link',
-      htmlBody: '<p>Hi ' + escapeHtml(String(r[1] || '')) + ',</p>' +
-        '<p>Use this personal link to choose your groups for ' + escapeHtml(title) + ':</p>' +
-        '<p><a href="' + link + '">' + link + '</a></p>' +
-        '<p>Please do not share it — it identifies you.</p>'
-    });
+  db = loadDb();
+  db.roster.forEach(function (r) {
+    if (r.token) sendLinkEmail(db, r);
   });
+}
+
+function inviteLink(db, token) {
+  var base = String(db.settings.SITE_URL || '').trim();
+  return base + (base.indexOf('?') >= 0 ? '&' : '?') + 't=' + token;
+}
+
+function sendLinkEmail(db, entry) {
+  var title = db.course.COURSE_CODE + ' ' + db.course.COURSE_NAME;
+  var link = inviteLink(db, entry.token);
+  MailApp.sendEmail({
+    to: entry.email,
+    subject: title + ': your group signup link',
+    htmlBody: '<p>Hi ' + escapeHtml(entry.name) + ',</p>' +
+      '<p>Use this personal link to choose your groups for ' + escapeHtml(title) + ':</p>' +
+      '<p><a href="' + link + '">' + link + '</a></p>' +
+      '<p>It signs you in on whichever device you open it on. Please do not share it — it identifies you.</p>' +
+      '<p>If you did not request this, you can ignore it.</p>'
+  });
+}
+
+/** Returns an error message if this student has asked for too many links, else ''. */
+function linkRequestLimit(email) {
+  var now = Date.now();
+  var dayAgo = now - 24 * 60 * 60 * 1000;
+  var recent = readRows(SHEETS.LOG).filter(function (r) {
+    return normalizeEmail(r[1]) === email && String(r[3]) === 'sendlink' && r[0] instanceof Date && r[0].getTime() > dayAgo;
+  });
+  if (recent.length >= LINK_REQUESTS_PER_DAY) return 'Too many link requests today. Check your spam folder, or ask the instructor.';
+  var latest = recent.reduce(function (m, r) { return Math.max(m, r[0].getTime()); }, 0);
+  if (now - latest < LINK_REQUEST_COOLDOWN_MS) return 'A link was sent a moment ago. Check your inbox and spam folder before trying again.';
+  return '';
 }
 
 /** Optional: upload a CSV snapshot of the signups to Dropbox. See README for the one-time OAuth setup. */
@@ -591,6 +679,21 @@ function toIso(v) {
 
 function newToken() {
   return Utilities.getUuid().replace(/-/g, '');
+}
+
+/** Opaque, stable id for a roster entry (first 12 hex chars of SHA-256 of the email). */
+function rosterId(email) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, email, Utilities.Charset.UTF_8);
+  return bytes.slice(0, 6).map(function (b) {
+    var h = (b < 0 ? b + 256 : b).toString(16);
+    return h.length < 2 ? '0' + h : h;
+  }).join('');
+}
+
+function maskEmail(email) {
+  var at = email.indexOf('@');
+  if (at < 1) return '***';
+  return email.charAt(0) + '***' + email.slice(at);
 }
 
 function escapeHtml(s) {

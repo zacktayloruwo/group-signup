@@ -59,20 +59,31 @@ name of the tab holding that assignment's groups.
 
 ## How students are identified
 
-Each student gets a personal link containing a random token stored in the
+Each student has a personal link containing a random token stored in the
 Roster sheet next to their email. The page remembers the token per course, so
 after the first visit students just open the site. One token covers every
 assignment in the course.
 
-Two modes, set in the Settings sheet:
+Students get their link in one of three ways, depending on the Settings sheet:
 
-| Mode | `OPEN_ENROLLMENT` | How it works | Trade-off |
+| Mode | Settings | How it works | Trade-off |
 |---|---|---|---|
-| **Roster** (recommended) | `false` | You paste the class list into the Roster sheet, run `generateTokens()`, and send each student their link. | Strongest: only listed students can sign up, and nobody can claim another student's identity. |
-| **Open enrollment** | `true` | Any visitor enters a name and email once, gets a token, and is added to the Roster. | Easier to launch. The first person to claim an email owns it, so impersonation is possible on first claim. Fine for low-stakes signups. |
+| **Find your name** (default) | `SELF_SERVICE_LINKS` = `true` | You paste the class list into the Roster sheet and share the course URL. A student picks their name from a searchable list, and the script emails their link to the address you have on file. | Only listed students can sign up, nobody can act as someone else without access to their inbox, and there is no mail merge. Students see classmates' names in the list. Gmail allows about 100 messages a day from a consumer account (1,500 on Google Workspace). |
+| **Invite links** | any | You run `generateTokens()` and `writeInviteLinks()` and send each student their link yourself, or run `sendInvites()`. | Same security as above with no waiting for email. Works alongside find-your-name. |
+| **Open enrollment** | `OPEN_ENROLLMENT` = `true` | Any visitor enters a name and email once, gets a token, and is added to the Roster. | Easiest to launch. The first person to claim an email owns it, so impersonation is possible on first claim. Fine for low-stakes signups. |
 
-A student who loses their token (new device, cleared storage) can get it back
-from you: it is in the Roster sheet.
+Students can look after themselves without you:
+
+- **Not you? Sign out on this device** forgets the link in that browser.
+- **Email me a fresh link** replaces their token and emails the new link. The
+  old link stops working everywhere. Use it after sharing a link by mistake or
+  to sign in on another device. Group choices are kept.
+- A student who loses their link just picks their name again. To stop the
+  public page being used to flood an inbox, each student can request at most
+  five links a day with a one-minute gap between requests.
+
+If you need to intervene, a student's token is in the Roster sheet, and
+clearing it and re-running `generateTokens()` has the same effect as a reset.
 
 ## Setup for a course
 
@@ -95,8 +106,11 @@ script deployment; the site just lists them all.
    - `SIGNUP_OPEN` set to `false` to freeze every assignment at once.
    - `NAME_DISPLAY` is `initial` for "Ada L." or `full` for "Ada Lovelace".
    - `OPEN_ENROLLMENT` is `false` (roster mode) or `true`.
+   - `SELF_SERVICE_LINKS` is `true` to let students find their name and get
+     their link by email, or `false` to rely on invite links only.
    - `SITE_URL` is your GitHub Pages URL including the course key, e.g.
-     `https://you.github.io/signup/?c=pol2230`. Filled in after step 3.
+     `https://you.github.io/signup/?c=pol2230`. Filled in after step 4. Emailed
+     links are built from it, so find-your-name does not work until it is set.
 
 ### 2. Describe the assignments and their groups
 
@@ -155,15 +169,19 @@ New version** so the live URL picks up the change.
 Nothing private is in the repository: the Apps Script URLs are public by
 design, and the admin keys and student data live only in the Sheets.
 
-### 5. Invite students (roster mode)
+### 5. Add students
 
-1. Paste `email` and `name` for each student into the **Roster** sheet.
-2. Run `generateTokens()` from the Apps Script editor.
-3. Run `writeInviteLinks()`. The `invite_link` column now holds each student's
-   personal link. Send them out with a mail merge from your usual email, or run
-   `sendInvites()` to email them from the Google account that owns the script.
+1. Paste `email` and `name` for each student into the **Roster** sheet. Use the
+   email address students will recognise as theirs, since that is where their
+   link goes.
+2. Share the course URL (`SITE_URL`) with the class. Students pick their name
+   on the page and receive their link by email. That is all that is needed.
 
-If you use open enrollment instead, just send everyone the course URL.
+If you would rather send links yourself, run `generateTokens()` and then
+`writeInviteLinks()` from the Apps Script editor. The `invite_link` column then
+holds each student's personal link for a mail merge, or run `sendInvites()` to
+email them from the Google account that owns the script. If you use open
+enrollment, just share the course URL.
 
 ## Day to day
 
@@ -228,7 +246,8 @@ can read. They are never sent to the browser.
 
 - Can see: course details, assignment names, due dates and instructions, group
   names, descriptions, slot counts, and the display names of members ("Ada L."
-  by default). Their own name, email, and selections are shown to them only.
+  by default). With find-your-name on, they also see the full names on the
+  roster. Their own email and selections are shown to them only.
 - Cannot see: other students' emails, tokens, the Sheet, the admin key, or the
   export.
 - Cannot do: change anyone else's selection, join a full group, or make changes
@@ -245,7 +264,8 @@ can take a few seconds.
 With no courses in `config.js`, the page runs in demo mode with a sample
 course, three assignments, and sample students held in memory, so you can see
 the interface before wiring anything up. The demo admin key is `demo`, and
-`?t=demo-ada` signs you in as a sample student. To preview locally:
+`?t=demo-ada` signs you in as a sample student. Find-your-name works in the
+demo but no email is sent; the message tells you the token to use instead. To preview locally:
 
 ```bash
 python3 -m http.server 8765 --directory docs
