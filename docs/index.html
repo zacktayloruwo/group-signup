@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Group Signup</title>
+  <meta name="description" content="Choose your groups for course assignments.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="demo-banner" class="banner" hidden>
+    <strong>Demo mode.</strong> No course is configured, so this page is using sample data and nothing is saved.
+    Add a course to <code>config.js</code> to connect it.
+  </div>
+
+  <header class="page-header">
+    <p id="course-code" class="course-code"></p>
+    <h1 id="course-title">Group Signup</h1>
+    <p id="course-meta" class="status-line" aria-live="polite">Loading…</p>
+  </header>
+
+  <main>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section id="course-chooser" class="chooser" hidden aria-labelledby="chooser-title">
+      <h2 id="chooser-title">Choose your course</h2>
+      <ul id="course-list" class="course-list"></ul>
+    </section>
+
+    <nav id="assignment-nav" class="assignment-nav" aria-label="Assignments" hidden></nav>
+
+    <section id="assignment" class="assignment" hidden aria-labelledby="assignment-title">
+      <h2 id="assignment-title"></h2>
+      <p id="assignment-meta" class="assignment-meta"></p>
+      <p id="assignment-instructions" class="assignment-instructions"></p>
+    </section>
+
+    <section id="identity" class="identity" aria-label="Your details"></section>
+
+    <section aria-labelledby="groups-heading">
+      <h2 id="groups-heading" class="visually-hidden">Groups</h2>
+      <div id="groups" class="groups" aria-busy="true"></div>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <button type="button" id="admin-open" class="link-button" hidden>Instructor</button>
+  </footer>
+
+  <dialog id="admin-dialog" class="admin" aria-labelledby="admin-title">
+    <form method="dialog" class="admin-header">
+      <h2 id="admin-title">Instructor panel</h2>
+      <button type="submit" class="link-button" aria-label="Close">Close</button>
+    </form>
+
+    <form id="admin-login" class="admin-login">
+      <label for="admin-key">Admin key <span class="hint">(the <code>ADMIN_KEY</code> value in this course's Settings sheet)</span></label>
+      <div class="row">
+        <input id="admin-key" type="password" autocomplete="off" required>
+        <button type="submit" class="button primary">Unlock</button>
+      </div>
+    </form>
+
+    <div id="admin-body" hidden>
+      <div class="admin-actions">
+        <button type="button" id="admin-download" class="button primary">Download CSV (this assignment)</button>
+        <button type="button" id="admin-download-all" class="button">Download CSV (all assignments)</button>
+        <button type="button" id="admin-refresh" class="button">Refresh</button>
+        <button type="button" id="admin-forget" class="link-button">Forget key</button>
+      </div>
+      <p id="admin-summary" class="hint"></p>
+      <div class="table-wrap">
+        <table id="admin-table">
+          <thead><tr><th>Email</th><th>Name</th><th>Group</th><th>Updated</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
