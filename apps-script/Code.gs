@@ -105,6 +105,10 @@ function handleRequest(req) {
       case 'join':     return withLock(function () { return actionJoin(req); });
       case 'leave':    return withLock(function () { return actionLeave(req); });
       case 'export':   return actionExport(req);
+      case 'adminGet':             return requireAdmin(req, actionAdminGet);
+      case 'adminSaveCourse':      return requireAdmin(req, function (r) { return withLock(function () { return actionAdminSaveCourse(r); }); });
+      case 'adminSaveAssignments': return requireAdmin(req, function (r) { return withLock(function () { return actionAdminSaveAssignments(r); }); });
+      case 'adminSaveRoster':      return requireAdmin(req, function (r) { return withLock(function () { return actionAdminSaveRoster(r); }); });
       default:         return { ok: false, error: 'Unknown action.' };
     }
   } catch (err) {
@@ -268,6 +272,151 @@ function actionExport(req) {
   out.rows = rows;
   out.csv = toCsv(rows);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Instructor editing (admin key required) — the Sheet stays the store
+// ---------------------------------------------------------------------------
+
+function requireAdmin(req, fn) {
+  var settings = readKeyValues(SHEETS.SETTINGS, DEFAULT_SETTINGS);
+  var adminKey = String(settings.ADMIN_KEY || '');
+  if (!adminKey) return { ok: false, error: 'ADMIN_KEY is not set in the Settings sheet.' };
+  if (String(req.adminKey || '') !== adminKey) return { ok: false, error: 'Wrong admin key.' };
+  return fn(req);
+}
+
+/** Everything the instructor panel edits, in raw form. Tokens and the admin key are never included. */
+function actionAdminGet(req) {
+  var db = loadDb();
+  var settings = {};
+  Object.keys(db.settings).forEach(function (k) { if (k !== 'ADMIN_KEY') settings[k] = db.settings[k]; });
+  return {
+    ok: true,
+    course: db.course,
+    settings: settings,
+    assignments: db.assignments.map(function (a) {
+      return { id: a.id, name: a.name, due: a.due, signupCloses: a.signupCloses, open: a.open, instructions: a.instructions, groups: a.groups };
+    }),
+    roster: db.roster.map(function (r) { return { email: r.email, name: r.name, hasToken: !!r.token }; })
+  };
+}
+
+function actionAdminSaveCourse(req) {
+  var course = req.course || {};
+  var settings = req.settings || {};
+  writeKeyValues(SHEETS.COURSE, DEFAULT_COURSE, course);
+  var allowed = {};
+  Object.keys(DEFAULT_SETTINGS).forEach(function (k) { if (k !== 'ADMIN_KEY' && k in settings) allowed[k] = settings[k]; });
+  writeKeyValues(SHEETS.SETTINGS, DEFAULT_SETTINGS, allowed);
+  appendLog('', '', 'admin-course', '', Object.keys(course).concat(Object.keys(allowed)).join(','));
+  return actionAdminGet(req);
+}
+
+function actionAdminSaveAssignments(req) {
+  var list = Array.isArray(req.assignments) ? req.assignments : [];
+  var seen = {};
+  var rows = [];
+  var tabs = [];
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i] || {};
+    var id = String(a.id || '').trim();
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) return { ok: false, error: 'Assignment id "' + id + '" must be 1–40 letters, digits, - or _.' };
+    if (RESERVED_SHEET_NAMES.indexOf(id) >= 0) return { ok: false, error: '"' + id + '" cannot be used as an assignment id.' };
+    if (seen[id.toLowerCase()]) return { ok: false, error: 'Assignment id "' + id + '" is used twice.' };
+    seen[id.toLowerCase()] = true;
+
+    var groups = Array.isArray(a.groups) ? a.groups : [];
+    var gseen = {};
+    var grows = [];
+    for (var j = 0; j < groups.length; j++) {
+      var g = groups[j] || {};
+      var gid = String(g.id || '').trim();
+      if (!gid) return { ok: false, error: 'A group in "' + id + '" has no id.' };
+      if (gseen[gid]) return { ok: false, error: 'Group id "' + gid + '" is used twice in "' + id + '".' };
+      gseen[gid] = true;
+      var slots = parseInt(g.slots, 10);
+      grows.push([gid, String(g.name || '').trim() || gid, isNaN(slots) || slots < 0 ? '' : slots, String(g.description || '').trim()]);
+    }
+    rows.push([id, String(a.name || '').trim() || id, String(a.due || '').trim(), String(a.signupCloses || '').trim(),
+      a.open === false || isFalse(a.open) ? 'false' : 'true', String(a.instructions || '').trim()]);
+    tabs.push({ id: id, rows: grows });
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  writeTable(getSheet(SHEETS.ASSIGNMENTS), ASSIGNMENT_HEADERS, rows);
+  tabs.forEach(function (t) {
+    var sheet = ss.getSheetByName(t.id) || ensureSheet(ss, t.id, GROUP_HEADERS, []);
+    writeTable(sheet, GROUP_HEADERS, t.rows);
+  });
+  appendLog('', '', 'admin-assignments', '', rows.length + ' assignment(s)');
+  return actionAdminGet(req);
+}
+
+/** Upsert roster rows by email; existing tokens are kept. With removeMissing, students not listed are removed. */
+function actionAdminSaveRoster(req) {
+  var list = Array.isArray(req.roster) ? req.roster : [];
+  var wanted = {};
+  var order = [];
+  for (var i = 0; i < list.length; i++) {
+    var email = normalizeEmail((list[i] || {}).email);
+    var name = String((list[i] || {}).name || '').trim();
+    if (!email) continue;
+    if (email.indexOf('@') < 1) return { ok: false, error: '"' + email + '" is not a valid email address.' };
+    if (!wanted[email]) order.push(email);
+    wanted[email] = name || (wanted[email] || '');
+  }
+
+  var sheet = getSheet(SHEETS.ROSTER);
+  var values = sheet.getDataRange().getValues();
+  var kept = [];
+  var present = {};
+  for (var r = 1; r < values.length; r++) {
+    var e = normalizeEmail(values[r][0]);
+    if (!e) continue;
+    if (wanted[e] !== undefined) {
+      present[e] = true;
+      kept.push([e, wanted[e] || String(values[r][1] || ''), String(values[r][2] || ''), values[r][3] || new Date(), String(values[r][4] || '')]);
+    } else if (!req.removeMissing) {
+      kept.push([e, String(values[r][1] || ''), String(values[r][2] || ''), values[r][3] || '', String(values[r][4] || '')]);
+    }
+  }
+  var added = 0;
+  order.forEach(function (e) {
+    if (!present[e]) { kept.push([e, wanted[e], '', new Date(), '']); added++; }
+  });
+  writeTable(sheet, ['email', 'name', 'token', 'created', 'invite_link'], kept);
+  appendLog('', '', 'admin-roster', '', kept.length + ' on roster, ' + added + ' added');
+  return actionAdminGet(req);
+}
+
+function writeKeyValues(sheetName, defaults, updates) {
+  var sheet = getSheet(sheetName);
+  var values = sheet.getDataRange().getValues();
+  var rowByKey = {};
+  for (var i = 1; i < values.length; i++) {
+    var k = String(values[i][0] || '').trim();
+    if (k) rowByKey[k] = i + 1;
+  }
+  Object.keys(updates).forEach(function (k) {
+    if (!(k in defaults)) return;
+    var v = updates[k];
+    v = v === true ? 'true' : v === false ? 'false' : String(v == null ? '' : v);
+    if (rowByKey[k]) sheet.getRange(rowByKey[k], 2).setValue(v);
+    else sheet.appendRow([k, v]);
+  });
+}
+
+/** Replace a sheet's contents with a header row and the given rows. Formatting and frozen rows are kept. */
+function writeTable(sheet, headers, rows) {
+  sheet.clearContents();
+  var all = [headers].concat(rows.map(function (r) {
+    var out = r.slice(0, headers.length);
+    while (out.length < headers.length) out.push('');
+    return out;
+  }));
+  sheet.getRange(1, 1, all.length, headers.length).setValues(all);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
 }
 
 // ---------------------------------------------------------------------------
@@ -693,6 +842,10 @@ function normalizeEmail(v) {
 
 function isTrue(v) {
   return /^(true|yes|1|on)$/i.test(String(v || '').trim());
+}
+
+function isFalse(v) {
+  return /^(false|no|0|off)$/i.test(String(v || '').trim());
 }
 
 function toIso(v) {

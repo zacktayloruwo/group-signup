@@ -355,3 +355,51 @@ th { position: sticky; top: 0; background: var(--surface); }
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+.admin-tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.admin-tabs button[data-tab] {
+  font: inherit;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.admin-tabs button[data-tab][aria-current="true"] { background: var(--accent-soft); color: var(--accent); }
+.admin-tabs .link-button { margin-left: auto; }
+.admin-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; align-items: start; }
+.admin-form h3 { grid-column: 1 / -1; margin: 8px 0 0; font-size: 1rem; color: var(--muted); border-top: 1px solid var(--border); padding-top: 12px; }
+.admin-form h3:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+.admin-form label, .assignment-editor label { display: grid; gap: 4px; font-size: 0.9rem; font-weight: 600; }
+.admin-form label.wide, .assignment-editor label.wide { grid-column: 1 / -1; }
+.admin-form input, .admin-form select, .admin-form textarea,
+.assignment-editor input, .assignment-editor textarea, #admin-roster {
+  font: inherit;
+  font-weight: 400;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+}
+.admin-form textarea, .assignment-editor textarea, #admin-roster { font-family: inherit; resize: vertical; }
+#admin-roster { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+.admin-form label.checkbox, .checkbox { display: flex; gap: 8px; align-items: center; font-weight: 600; font-size: 0.9rem; }
+.admin-form label.checkbox input, .checkbox input { width: auto; }
+.admin-form .actions { grid-column: 1 / -1; }
+.assignment-editor {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+  background: var(--bg);
+}
+.assignment-editor summary { cursor: pointer; font-weight: 600; }
+.assignment-editor .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin: 10px 0; }
+.assignment-editor table { background: var(--surface); }
+.assignment-editor td { padding: 4px; white-space: normal; }
+.assignment-editor td input { padding: 4px 6px; }
+.assignment-editor .groups-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }

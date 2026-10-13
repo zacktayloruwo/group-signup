@@ -30,6 +30,22 @@ counts, and is the only one who can download the data.
                                           └─ Log           audit trail
 ```
 
+## Two ways to edit everything
+
+Everything the instructor controls lives in the course's Google Sheet, and you
+can edit it either directly in the Sheet or from the **Instructor** panel on
+the site, which writes to the same Sheet. The panel has four tabs:
+
+| Tab | What you edit |
+|---|---|
+| **Signups** | Who is in which group for the assignment on screen, with CSV downloads. |
+| **Course & settings** | Course name, code, year, term, section, professor; whether signup is open; find-your-name and open enrollment; how names are shown; the site URL; and the link email's sender name, reply-to, subject, and signature. |
+| **Assignments & groups** | Add, edit, or remove assignments (name, due date, signup close, open flag, instructions) and the groups in each (id, name, slots, description). "Add several…" takes one group per line. |
+| **Roster** | Paste `email, name` lines straight from a spreadsheet. Existing students keep their links. Tick "Remove students not listed" to drop people. |
+
+The admin key itself can only be changed in the Sheet. Assignment ids cannot
+be renamed from the panel once created, because they name the Sheet tabs.
+
 ## Why this design
 
 GitHub Pages can only serve static files, so it cannot keep a secret or enforce
@@ -119,6 +135,9 @@ script deployment; the site just lists them all.
 
 ### 2. Describe the assignments and their groups
 
+You can do this step from the site's Instructor panel once steps 3 and 4 are
+done, which most people will find easier. To do it in the Sheet instead:
+
 1. In **Assignments**, one row per assignment:
 
    | column | meaning |
@@ -176,9 +195,9 @@ design, and the admin keys and student data live only in the Sheets.
 
 ### 5. Add students
 
-1. Paste `email` and `name` for each student into the **Roster** sheet. Use the
-   email address students will recognise as theirs, since that is where their
-   link goes.
+1. Paste `email` and `name` for each student into the **Roster** sheet, or
+   into the Roster tab of the site's Instructor panel. Use the email address
+   students will recognise as theirs, since that is where their link goes.
 2. Share the course URL (`SITE_URL`) with the class. Students pick their name
    on the page and receive their link by email. That is all that is needed.
 

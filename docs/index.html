@@ -63,19 +63,52 @@
     </form>
 
     <div id="admin-body" hidden>
-      <div class="admin-actions">
-        <button type="button" id="admin-download" class="button primary">Download CSV (this assignment)</button>
-        <button type="button" id="admin-download-all" class="button">Download CSV (all assignments)</button>
-        <button type="button" id="admin-refresh" class="button">Refresh</button>
+      <div id="admin-notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <nav class="admin-tabs" aria-label="Instructor sections">
+        <button type="button" data-tab="signups" aria-current="true">Signups</button>
+        <button type="button" data-tab="course">Course &amp; settings</button>
+        <button type="button" data-tab="assignments">Assignments &amp; groups</button>
+        <button type="button" data-tab="roster">Roster</button>
         <button type="button" id="admin-forget" class="link-button">Forget key</button>
-      </div>
-      <p id="admin-summary" class="hint"></p>
-      <div class="table-wrap">
-        <table id="admin-table">
-          <thead><tr><th>Email</th><th>Name</th><th>Group</th><th>Updated</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
+      </nav>
+
+      <section data-panel="signups">
+        <div class="admin-actions">
+          <button type="button" id="admin-download" class="button primary">Download CSV (this assignment)</button>
+          <button type="button" id="admin-download-all" class="button">Download CSV (all assignments)</button>
+          <button type="button" id="admin-refresh" class="button">Refresh</button>
+        </div>
+        <p id="admin-summary" class="hint"></p>
+        <div class="table-wrap">
+          <table id="admin-table">
+            <thead><tr><th>Email</th><th>Name</th><th>Group</th><th>Updated</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section data-panel="course" hidden>
+        <form id="admin-course-form" class="admin-form"></form>
+      </section>
+
+      <section data-panel="assignments" hidden>
+        <p class="hint">Each assignment has its own set of groups. Changes are saved to the Sheet when you click Save. Removing an assignment here keeps its tab in the Sheet.</p>
+        <div id="admin-assignments"></div>
+        <div class="admin-actions">
+          <button type="button" id="admin-add-assignment" class="button">Add assignment</button>
+          <button type="button" id="admin-save-assignments" class="button primary">Save assignments</button>
+        </div>
+      </section>
+
+      <section data-panel="roster" hidden>
+        <p class="hint">One student per line as <code>email, name</code> (a tab or comma between them). Paste straight from a spreadsheet. Existing students keep their links; new ones get a link when they ask for it.</p>
+        <textarea id="admin-roster" rows="12" spellcheck="false"></textarea>
+        <div class="admin-actions">
+          <label class="checkbox"><input type="checkbox" id="admin-roster-remove"> Remove students not listed above</label>
+          <button type="button" id="admin-save-roster" class="button primary">Save roster</button>
+          <span id="admin-roster-count" class="hint"></span>
+        </div>
+      </section>
     </div>
   </dialog>
 

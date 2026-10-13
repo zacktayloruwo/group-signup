@@ -12,7 +12,7 @@
   var apiUrl = '';
   var token = '';
   var assignmentId = '';
-  var admin = { key: '', data: null };
+  var admin = { key: '', data: null, config: null, assignments: null };
 
   function normalizeCourses(raw) {
     var out = {};
@@ -608,6 +608,7 @@
     $('#admin-forget').addEventListener('click', function () {
       admin.key = '';
       admin.data = null;
+      admin.config = null;
       storageDel(sessionStorage, adminKeyKey());
       showLogin();
     });
@@ -622,16 +623,38 @@
       downloadCsv(admin.data.csv, 'all');
     });
 
-    function downloadCsv(csv, suffix) {
-      var code = (state.course && state.course.code) || 'course';
-      var name = (code + '_' + suffix + '_signups_' + new Date().toISOString().slice(0, 10)).replace(/[^\w\-]+/g, '_') + '.csv';
-      var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    document.querySelectorAll('.admin-tabs button[data-tab]').forEach(function (btn) {
+      btn.addEventListener('click', function () { showTab(btn.getAttribute('data-tab')); });
+    });
+    $('#admin-add-assignment').addEventListener('click', function () {
+      admin.assignments.push({ id: '', name: '', due: '', signupCloses: '', open: true, instructions: '', groups: [], isNew: true });
+      renderAssignmentsEditor();
+      var editors = document.querySelectorAll('.assignment-editor');
+      var last = editors[editors.length - 1];
+      if (last) { last.open = true; var first = last.querySelector('input'); if (first) first.focus(); }
+    });
+    $('#admin-save-assignments').addEventListener('click', function () {
+      var payload = admin.assignments.map(function (a) {
+        return { id: a.id, name: a.name, due: a.due, signupCloses: a.signupCloses, open: a.open, instructions: a.instructions,
+          groups: a.groups.map(function (g) { return { id: g.id, name: g.name, slots: g.slots, description: g.description }; }) };
+      });
+      adminSave({ action: 'adminSaveAssignments', assignments: payload }, 'Assignments saved.');
+    });
+    $('#admin-save-roster').addEventListener('click', function () {
+      var roster = parseRosterText($('#admin-roster').value);
+      adminSave({ action: 'adminSaveRoster', roster: roster, removeMissing: $('#admin-roster-remove').checked }, 'Roster saved.');
+    });
+    $('#admin-roster').addEventListener('input', function () {
+      $('#admin-roster-count').textContent = parseRosterText($('#admin-roster').value).length + ' listed';
+    });
+
+    function showTab(name) {
+      document.querySelectorAll('.admin-tabs button[data-tab]').forEach(function (b) {
+        b.setAttribute('aria-current', b.getAttribute('data-tab') === name ? 'true' : 'false');
+      });
+      document.querySelectorAll('#admin-body section[data-panel]').forEach(function (sec) {
+        sec.hidden = sec.getAttribute('data-panel') !== name;
+      });
     }
 
     function showLogin() {
@@ -640,14 +663,26 @@
       $('#admin-key').value = '';
     }
 
+    function adminNotify(message, kind) {
+      var n = $('#admin-notice');
+      n.textContent = message;
+      n.className = 'notice ' + (kind || '');
+      n.hidden = !message;
+    }
+
     function adminLoad() {
-      api({ action: 'export', adminKey: admin.key })
-        .then(function (data) {
-          admin.data = data;
+      Promise.all([
+        api({ action: 'export', adminKey: admin.key }),
+        api({ action: 'adminGet', adminKey: admin.key })
+      ])
+        .then(function (results) {
+          admin.data = results[0];
+          admin.config = results[1];
           storageSet(sessionStorage, adminKeyKey(), admin.key);
           login.hidden = true;
           body.hidden = false;
-          renderAdmin(data);
+          adminNotify('');
+          renderAdmin();
         })
         .catch(function (err) {
           showLogin();
@@ -655,7 +690,28 @@
         });
     }
 
-    function renderAdmin(data) {
+    function adminSave(payload, successMessage) {
+      payload.adminKey = admin.key;
+      adminNotify('Saving…');
+      api(payload)
+        .then(function (data) {
+          admin.config = data;
+          renderAdmin();
+          adminNotify(successMessage, 'success');
+          load();
+        })
+        .catch(function (err) { adminNotify(err.message, 'error'); });
+    }
+
+    function renderAdmin() {
+      renderSignups(admin.data);
+      renderCourseForm(admin.config);
+      admin.assignments = JSON.parse(JSON.stringify(admin.config.assignments));
+      renderAssignmentsEditor();
+      renderRoster(admin.config);
+    }
+
+    function renderSignups(data) {
       var a = findAssignment(assignmentId);
       var rows = data.rows.slice(1).filter(function (r) { return r[2] === assignmentId; });
       var tbody = $('#admin-table tbody');
@@ -675,6 +731,269 @@
       }).join(' · ') : '';
       $('#admin-summary').textContent = (a ? a.name + ' — ' : '') + rows.length + ' on roster, ' + chosen + ' have chosen. ' + perGroup;
     }
+
+    var COURSE_FIELDS = [
+      ['COURSE_NAME', 'Course name'], ['COURSE_CODE', 'Course code'], ['YEAR', 'Year'],
+      ['TERM', 'Term'], ['SECTION', 'Section'], ['PROFESSOR', 'Professor']
+    ];
+    var SETTING_FIELDS = [
+      ['SIGNUP_OPEN', 'Signup open for all assignments', 'checkbox'],
+      ['SELF_SERVICE_LINKS', 'Students can find their name and get their link by email', 'checkbox'],
+      ['OPEN_ENROLLMENT', 'Open enrollment (anyone can register with an email)', 'checkbox'],
+      ['NAME_DISPLAY', 'How members are shown to classmates', 'select', [['initial', 'First name and last initial'], ['full', 'Full name']]],
+      ['SITE_URL', 'Site URL, including ?c=<course key>', 'url']
+    ];
+    var EMAIL_FIELDS = [
+      ['EMAIL_SENDER_NAME', 'Sender name (From line)', 'text'],
+      ['EMAIL_REPLY_TO', 'Reply-to address', 'email'],
+      ['EMAIL_SUBJECT', 'Subject', 'text'],
+      ['EMAIL_SIGNATURE', 'Signature (line breaks kept)', 'textarea']
+    ];
+
+    function field(key, label, type, value, options) {
+      var lab = document.createElement('label');
+      if (type === 'checkbox') lab.className = 'checkbox';
+      if (type === 'textarea') lab.className = 'wide';
+      var control;
+      if (type === 'select') {
+        control = document.createElement('select');
+        options.forEach(function (o) {
+          var opt = document.createElement('option');
+          opt.value = o[0]; opt.textContent = o[1];
+          if (o[0] === value) opt.selected = true;
+          control.appendChild(opt);
+        });
+      } else if (type === 'textarea') {
+        control = document.createElement('textarea');
+        control.rows = 4;
+        control.value = value || '';
+      } else {
+        control = document.createElement('input');
+        control.type = type || 'text';
+        if (type === 'checkbox') control.checked = /^(true|yes|1|on)$/i.test(String(value || ''));
+        else control.value = value || '';
+      }
+      control.name = key;
+      if (type === 'checkbox') { lab.appendChild(control); lab.appendChild(document.createTextNode(label)); }
+      else { lab.appendChild(document.createTextNode(label)); lab.appendChild(control); }
+      return lab;
+    }
+
+    function heading(text) { var h = document.createElement('h3'); h.textContent = text; return h; }
+
+    function renderCourseForm(config) {
+      var form = $('#admin-course-form');
+      form.textContent = '';
+      form.appendChild(heading('Course'));
+      COURSE_FIELDS.forEach(function (f) { form.appendChild(field(f[0], f[1], 'text', config.course[f[0]])); });
+      form.appendChild(heading('Signup settings'));
+      SETTING_FIELDS.forEach(function (f) { form.appendChild(field(f[0], f[1], f[2], config.settings[f[0]], f[3])); });
+      form.appendChild(heading('Link email'));
+      EMAIL_FIELDS.forEach(function (f) { form.appendChild(field(f[0], f[1], f[2], config.settings[f[0]])); });
+      var actions = document.createElement('div');
+      actions.className = 'actions';
+      var save = document.createElement('button');
+      save.type = 'submit';
+      save.className = 'button primary';
+      save.textContent = 'Save course & settings';
+      actions.appendChild(save);
+      var note = document.createElement('span');
+      note.className = 'hint';
+      note.textContent = ' The admin key can only be changed in the Settings sheet.';
+      actions.appendChild(note);
+      form.appendChild(actions);
+      form.onsubmit = function (ev) {
+        ev.preventDefault();
+        var course = {}, settings = {};
+        COURSE_FIELDS.forEach(function (f) { course[f[0]] = form.elements[f[0]].value.trim(); });
+        SETTING_FIELDS.concat(EMAIL_FIELDS).forEach(function (f) {
+          var el = form.elements[f[0]];
+          settings[f[0]] = f[2] === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value.trim();
+        });
+        adminSave({ action: 'adminSaveCourse', course: course, settings: settings }, 'Course and settings saved.');
+      };
+    }
+
+    function renderAssignmentsEditor() {
+      var container = $('#admin-assignments');
+      container.textContent = '';
+      if (!admin.assignments.length) {
+        var none = document.createElement('p');
+        none.className = 'hint';
+        none.textContent = 'No assignments yet. Click "Add assignment".';
+        container.appendChild(none);
+      }
+      admin.assignments.forEach(function (a, index) {
+        var det = document.createElement('details');
+        det.className = 'assignment-editor';
+        det.open = !!a.isNew;
+        var sum = document.createElement('summary');
+        sum.textContent = (a.name || a.id || 'New assignment') + (a.id ? ' (' + a.id + ')' : '') + ' — ' + a.groups.length + ' group' + (a.groups.length === 1 ? '' : 's');
+        det.appendChild(sum);
+
+        var fields = document.createElement('div');
+        fields.className = 'fields';
+        fields.appendChild(bound(a, 'id', 'Id (short, letters/digits/-/_)', 'text', !a.isNew));
+        fields.appendChild(bound(a, 'name', 'Name', 'text'));
+        fields.appendChild(bound(a, 'due', 'Due date', 'date'));
+        fields.appendChild(bound(a, 'signupCloses', 'Signup closes', 'datetime-local'));
+        var openLab = document.createElement('label');
+        openLab.className = 'checkbox';
+        var openBox = document.createElement('input');
+        openBox.type = 'checkbox';
+        openBox.checked = a.open !== false && !/^(false|no|0|off)$/i.test(String(a.open));
+        openBox.addEventListener('change', function () { a.open = openBox.checked; });
+        openLab.appendChild(openBox);
+        openLab.appendChild(document.createTextNode('Signup open for this assignment'));
+        fields.appendChild(openLab);
+        var instr = bound(a, 'instructions', 'Instructions (shown above the groups)', 'textarea');
+        instr.className = 'wide';
+        fields.appendChild(instr);
+        det.appendChild(fields);
+
+        var table = document.createElement('table');
+        table.innerHTML = '<thead><tr><th>Group id</th><th>Name</th><th>Slots (blank = no limit)</th><th>Description</th><th></th></tr></thead>';
+        var tbody = document.createElement('tbody');
+        a.groups.forEach(function (g, gi) {
+          var tr = document.createElement('tr');
+          ['id', 'name', 'slots', 'description'].forEach(function (k) {
+            var td = document.createElement('td');
+            var input = document.createElement('input');
+            input.type = k === 'slots' ? 'number' : 'text';
+            if (k === 'slots') input.min = '0';
+            input.value = g[k] == null ? '' : (k === 'slots' && !g[k] ? '' : g[k]);
+            input.setAttribute('aria-label', k);
+            input.addEventListener('input', function () { g[k] = input.value; });
+            td.appendChild(input);
+            tr.appendChild(td);
+          });
+          var tdRemove = document.createElement('td');
+          var rm = document.createElement('button');
+          rm.type = 'button';
+          rm.className = 'link-button';
+          rm.textContent = 'Remove';
+          rm.addEventListener('click', function () { a.groups.splice(gi, 1); renderAssignmentsEditor(); reopen(index); });
+          tdRemove.appendChild(rm);
+          tr.appendChild(tdRemove);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        det.appendChild(table);
+
+        var gactions = document.createElement('div');
+        gactions.className = 'groups-actions';
+        var addGroup = document.createElement('button');
+        addGroup.type = 'button';
+        addGroup.className = 'button';
+        addGroup.textContent = 'Add group';
+        addGroup.addEventListener('click', function () {
+          a.groups.push({ id: '', name: '', slots: '', description: '' });
+          renderAssignmentsEditor();
+          reopen(index);
+        });
+        var addMany = document.createElement('button');
+        addMany.type = 'button';
+        addMany.className = 'button';
+        addMany.textContent = 'Add several…';
+        addMany.addEventListener('click', function () {
+          var text = window.prompt('One group per line. Optionally add a comma and the number of slots, e.g.\nAustralia, 4\nDenmark, 4');
+          if (!text) return;
+          text.split(/\r?\n/).forEach(function (line) {
+            var parts = line.split(',');
+            var name = parts[0].trim();
+            if (!name) return;
+            a.groups.push({ id: name, name: name, slots: (parts[1] || '').trim(), description: (parts.slice(2).join(',') || '').trim() });
+          });
+          renderAssignmentsEditor();
+          reopen(index);
+        });
+        var removeAssignment = document.createElement('button');
+        removeAssignment.type = 'button';
+        removeAssignment.className = 'button danger';
+        removeAssignment.textContent = 'Remove assignment';
+        removeAssignment.addEventListener('click', function () {
+          if (!window.confirm('Remove "' + (a.name || a.id) + '" from the list? Its tab stays in the Sheet until you delete it there.')) return;
+          admin.assignments.splice(index, 1);
+          renderAssignmentsEditor();
+        });
+        gactions.appendChild(addGroup);
+        gactions.appendChild(addMany);
+        gactions.appendChild(removeAssignment);
+        det.appendChild(gactions);
+        container.appendChild(det);
+      });
+
+      function reopen(i) {
+        var editors = document.querySelectorAll('.assignment-editor');
+        if (editors[i]) editors[i].open = true;
+      }
+    }
+
+    function bound(obj, key, label, type, readOnly) {
+      var lab = document.createElement('label');
+      lab.appendChild(document.createTextNode(label));
+      var control = document.createElement(type === 'textarea' ? 'textarea' : 'input');
+      if (type === 'textarea') control.rows = 3; else control.type = type;
+      var value = obj[key] == null ? '' : String(obj[key]);
+      if (type === 'date') value = toDateInput(value);
+      if (type === 'datetime-local') value = toDateTimeInput(value);
+      control.value = value;
+      if (readOnly) { control.readOnly = true; control.title = 'Ids cannot be changed once created.'; }
+      control.addEventListener('input', function () { obj[key] = control.value; });
+      lab.appendChild(control);
+      return lab;
+    }
+
+    function renderRoster(config) {
+      var text = config.roster.map(function (r) { return r.email + ', ' + r.name; }).join('\n');
+      $('#admin-roster').value = text;
+      $('#admin-roster-remove').checked = false;
+      $('#admin-roster-count').textContent = config.roster.length + ' on roster';
+    }
+
+    function parseRosterText(text) {
+      var out = [];
+      String(text || '').split(/\r?\n/).forEach(function (line) {
+        line = line.trim();
+        if (!line) return;
+        var parts = line.split(/\t|,/);
+        var email = (parts.shift() || '').trim();
+        var name = parts.join(' ').replace(/\s+/g, ' ').trim();
+        if (/@/.test(name) && !/@/.test(email)) { var t = email; email = name; name = t; }
+        if (email) out.push({ email: email, name: name });
+      });
+      return out;
+    }
+
+    function downloadCsv(csv, suffix) {
+      var code = (state.course && state.course.code) || 'course';
+      var name = (code + '_' + suffix + '_signups_' + new Date().toISOString().slice(0, 10)).replace(/[^\w\-]+/g, '_') + '.csv';
+      var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    }
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  function toDateInput(value) {
+    if (!value) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function toDateTimeInput(value) {
+    if (!value) return '';
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return value;
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return '';
+    return toDateInput(value) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
   function toCsv(rows) {
@@ -794,6 +1113,54 @@
         if (closedReason(a)) return fail(closedReason(a));
         delete db.signups[r.email + '|' + a.id];
         return ok({ me: me(r) });
+      case 'adminGet':
+      case 'adminSaveCourse':
+      case 'adminSaveAssignments':
+      case 'adminSaveRoster': {
+        if (payload.adminKey !== 'demo') return fail('Wrong admin key. (In demo mode the key is "demo".)');
+        if (payload.action === 'adminSaveCourse') {
+          var c = payload.course || {}, st = payload.settings || {};
+          if (c.COURSE_NAME) db.course.name = c.COURSE_NAME;
+          if (c.COURSE_CODE) db.course.code = c.COURSE_CODE;
+          if (c.YEAR) db.course.year = c.YEAR;
+          if (c.TERM) db.course.term = c.TERM;
+          if (c.SECTION) db.course.section = c.SECTION;
+          if (c.PROFESSOR) db.course.professor = c.PROFESSOR;
+          if ('SIGNUP_OPEN' in st) db.settings.signupOpen = st.SIGNUP_OPEN === 'true';
+          if ('OPEN_ENROLLMENT' in st) db.settings.openEnrollment = st.OPEN_ENROLLMENT === 'true';
+          if ('SELF_SERVICE_LINKS' in st) db.settings.selfServiceLinks = st.SELF_SERVICE_LINKS === 'true';
+          db.rawSettings = Object.assign(db.rawSettings || {}, st);
+        }
+        if (payload.action === 'adminSaveAssignments') {
+          db.assignments = (payload.assignments || []).map(function (x) {
+            return { id: x.id, name: x.name || x.id, due: x.due || '', signupCloses: x.signupCloses || '', open: x.open !== false && x.open !== 'false',
+              instructions: x.instructions || '', groups: (x.groups || []).map(function (g) {
+                return { id: g.id, name: g.name || g.id, slots: parseInt(g.slots, 10) || 0, description: g.description || '' };
+              }) };
+          });
+        }
+        if (payload.action === 'adminSaveRoster') {
+          var keep = {};
+          (payload.roster || []).forEach(function (x) {
+            var em = String(x.email || '').trim().toLowerCase();
+            if (!em) return;
+            keep[em] = true;
+            var ex = db.roster.filter(function (y) { return y.email === em; })[0];
+            if (ex) { if (x.name) ex.name = x.name; }
+            else db.roster.push({ email: em, name: x.name || em, token: '' });
+          });
+          if (payload.removeMissing) db.roster = db.roster.filter(function (y) { return keep[y.email]; });
+        }
+        var raw = Object.assign({ SIGNUP_OPEN: String(db.settings.signupOpen), OPEN_ENROLLMENT: String(db.settings.openEnrollment),
+          SELF_SERVICE_LINKS: String(db.settings.selfServiceLinks), NAME_DISPLAY: 'initial', SITE_URL: location.origin + location.pathname,
+          EMAIL_SENDER_NAME: '', EMAIL_REPLY_TO: '', EMAIL_SUBJECT: '', EMAIL_SIGNATURE: '' }, db.rawSettings || {});
+        return ok({
+          course: { COURSE_NAME: db.course.name, COURSE_CODE: db.course.code, YEAR: db.course.year, TERM: db.course.term, SECTION: db.course.section, PROFESSOR: db.course.professor },
+          settings: raw,
+          assignments: db.assignments.map(function (x) { return { id: x.id, name: x.name, due: x.due, signupCloses: x.signupCloses, open: x.open, instructions: x.instructions, groups: x.groups }; }),
+          roster: db.roster.map(function (x) { return { email: x.email, name: x.name, hasToken: !!x.token }; })
+        });
+      }
       case 'export': {
         if (payload.adminKey !== 'demo') return fail('Wrong admin key. (In demo mode the key is "demo".)');
         var rows = [['email', 'name', 'assignment_id', 'assignment_name', 'group_id', 'group_name', 'updated']];
