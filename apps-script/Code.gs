@@ -32,6 +32,9 @@
  *   backupToDropbox()      copy a CSV snapshot to Dropbox (optional)
  */
 
+// Bump when deploying, so the live version can be checked with <web app URL> (no action) or ?action=version.
+var SCRIPT_VERSION = '2026-10-18.4 sheet cache';
+
 var SHEETS = {
   COURSE:      'Course',
   SETTINGS:    'Settings',
@@ -84,7 +87,7 @@ var ATTENDANCE_HEADERS = ['session_id', 'email', 'checked_in', 'device', 'by'];
 function doGet(e) {
   var params = (e && e.parameter) || {};
   if (!params.action) {
-    return jsonResponse({ ok: true, service: 'group-signup', hint: 'POST a JSON body with an action.' });
+    return jsonResponse({ ok: true, service: 'group-signup', version: SCRIPT_VERSION, hint: 'POST a JSON body with an action.' });
   }
   return jsonResponse(handleRequest(params));
 }
@@ -108,6 +111,7 @@ function jsonResponse(obj) {
 function handleRequest(req) {
   try {
     switch (req.action) {
+      case 'version':  return { ok: true, version: SCRIPT_VERSION };
       case 'state':    return actionState(req);
       case 'roster':   return actionRoster(req);
       case 'sendLink': return withLock(function () { return actionSendLink(req); });
