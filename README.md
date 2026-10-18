@@ -126,7 +126,7 @@ clearing it and re-running `generateTokens()` has the same effect as a reset.
 5. The Attendance tab refreshes every ten seconds while the check-in is open:
    how many have checked in, who, and any flags. **Extend 5 min** keeps it
    open longer, **Close now** ends it early. It closes by itself when the
-   time is up, and a closed session can be reopened for five minutes from the
+   time is up, and a closed session can be reopened for ten minutes from the
    same tab.
 
 A student whose phone is dead can be marked present from the table (**Mark

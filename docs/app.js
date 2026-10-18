@@ -1051,9 +1051,10 @@
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'link-button';
-        btn.textContent = 'Reopen "' + last.label + '" for 5 more minutes';
+        var reopenMinutes = 10;
+        btn.textContent = 'Reopen "' + last.label + '" for ' + reopenMinutes + ' more minutes';
         btn.addEventListener('click', function () {
-          attendanceCall({ action: 'adminExtendSession', sessionId: last.id, minutes: 5 }, 'Reopened for 5 minutes.', btn, 'Reopening…');
+          attendanceCall({ action: 'adminExtendSession', sessionId: last.id, minutes: reopenMinutes }, 'Reopened for ' + reopenMinutes + ' minutes.', btn, 'Reopening…');
         });
         reopen.appendChild(btn);
         box.appendChild(reopen);
