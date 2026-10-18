@@ -10,7 +10,7 @@
 window.GROUP_SIGNUP_CONFIG = {
   COURSES: {
     'pol3540': {
-      url: 'https://script.google.com/macros/s/AKfycbxX9NA8g2xJNb4CzfI-wqwT_Yle2g_lKmfpQmknN0m5bIWa-A4RgxmtBieezw28dLTh/exec',
+      url: 'https://script.google.com/macros/s/AKfycbyJyvxZrsy3ljC1fDL62845jVJ14R-IcEUWz114wrbfDjbL7lVMR8CPyHHdj4j9J_2bRw/exec',
       label: 'POL 3540 — Politics of Immigration and Citizenship (Fall 2026)'
     }
   }
