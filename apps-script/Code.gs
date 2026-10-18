@@ -33,7 +33,7 @@
  */
 
 // Bump when deploying, so the live version can be checked with <web app URL> (no action) or ?action=version.
-var SCRIPT_VERSION = '2026-10-18.5 full cache';
+var SCRIPT_VERSION = '2026-10-18.6 attend links';
 
 var SHEETS = {
   COURSE:      'Course',
@@ -216,8 +216,8 @@ function actionSendLink(req) {
     getSheet(SHEETS.ROSTER).getRange(entry.row, 3).setValue(entry.token);
     invalidateSheetCache();
   }
-  sendLinkEmail(db, entry);
-  appendLog(entry.email, '', 'sendlink', '', '');
+  sendLinkEmail(db, entry, req.page);
+  appendLog(entry.email, '', 'sendlink', '', req.page === 'attend' ? 'attend' : '');
   return { ok: true, sentTo: maskEmail(entry.email) };
 }
 
@@ -234,8 +234,8 @@ function actionResetToken(req) {
   me.token = newToken();
   getSheet(SHEETS.ROSTER).getRange(me.row, 3).setValue(me.token);
   invalidateSheetCache();
-  sendLinkEmail(db, me);
-  appendLog(me.email, '', 'reset', '', '');
+  sendLinkEmail(db, me, req.page);
+  appendLog(me.email, '', 'reset', '', req.page === 'attend' ? 'attend' : '');
   return { ok: true, sentTo: maskEmail(me.email) };
 }
 
@@ -1226,24 +1226,40 @@ function sendInvites() {
   });
 }
 
-function inviteLink(db, token) {
+/**
+ * A student's personal link: SITE_URL plus their token. With page 'attend' it points at the
+ * check-in page next to the signup page (…/attend.html?c=…&t=…), so a link requested from the
+ * attendance page brings the student back there. The token is shared by both pages.
+ */
+function inviteLink(db, token, page) {
   var base = String(db.settings.SITE_URL || '').trim();
+  if (page === 'attend') {
+    var q = base.indexOf('?');
+    var path = q >= 0 ? base.slice(0, q) : base, query = q >= 0 ? base.slice(q) : '';
+    path = path.replace(/index\.html$/, '');
+    base = path + (path.charAt(path.length - 1) === '/' ? '' : '/') + 'attend.html' + query;
+  }
   return base + (base.indexOf('?') >= 0 ? '&' : '?') + 't=' + token;
 }
 
-function sendLinkEmail(db, entry) {
+function sendLinkEmail(db, entry, page) {
   var c = db.course, s = db.settings;
   var title = c.COURSE_CODE + ' ' + c.COURSE_NAME;
-  var link = inviteLink(db, entry.token);
+  var attend = page === 'attend';
+  var link = inviteLink(db, entry.token, page);
   var signature = s.EMAIL_SIGNATURE || (c.PROFESSOR + '\n' + title);
   var message = {
     to: entry.name ? '"' + entry.name.replace(/["<>]/g, '') + '" <' + entry.email + '>' : entry.email,
     name: s.EMAIL_SENDER_NAME || c.PROFESSOR,
-    subject: s.EMAIL_SUBJECT || (title + ': your group signup link'),
+    subject: attend ? title + ': your attendance check-in link' : (s.EMAIL_SUBJECT || (title + ': your group signup link')),
     htmlBody: '<p>Hi ' + escapeHtml(entry.name) + ',</p>' +
-      '<p>Use this personal link to choose your groups for ' + escapeHtml(title) + ':</p>' +
+      (attend
+        ? '<p>Use this personal link to check in to class for ' + escapeHtml(title) + '. Open it on the phone you will bring to class:</p>'
+        : '<p>Use this personal link to choose your groups for ' + escapeHtml(title) + ':</p>') +
       '<p><a href="' + link + '">' + link + '</a></p>' +
-      '<p>It signs you in on whichever device you open it on. Please do not share it — it identifies you.</p>' +
+      (attend
+        ? '<p>It signs you in on whichever device you open it on, for attendance and for group signup. Please do not share it — it identifies you.</p>'
+        : '<p>It signs you in on whichever device you open it on. Please do not share it — it identifies you.</p>') +
       '<p>If you did not request this, you can ignore it.</p>' +
       '<p>' + escapeHtml(signature).replace(/\n/g, '<br>') + '</p>'
   };

@@ -414,7 +414,7 @@
       reset.title = 'Replaces your link. Use this if you shared it by mistake or want to sign in elsewhere.';
       reset.addEventListener('click', function () {
         if (!window.confirm('Email you a new personal link? Your current link will stop working, and you will be signed out on this device until you open the new one.')) return;
-        busy(reset, 'Sending…', api({ action: 'resetToken', token: token }))
+        busy(reset, 'Sending…', api({ action: 'resetToken', token: token, page: ATTEND ? 'attend' : 'signup' }))
           .then(function (data) {
             setToken('');
             load();
@@ -488,7 +488,7 @@
       cancel.textContent = 'Cancel';
       cancel.addEventListener('click', function () { confirmBox.hidden = true; });
       send.addEventListener('click', function () {
-        busy(send, 'Sending…', api({ action: 'sendLink', rosterId: r.id }))
+        busy(send, 'Sending…', api({ action: 'sendLink', rosterId: r.id, page: ATTEND ? 'attend' : 'signup' }))
           .then(function (data) {
             confirmBox.textContent = '';
             var done = document.createElement('p');
