@@ -306,6 +306,24 @@ body {
   outline-offset: 2px;
 }
 
+/* Waiting on the script: a page-level line while loading, and an inline spinner inside a busy button */
+.spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.15em;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 1.6s; } }
+.loading { display: flex; gap: 8px; align-items: center; margin: 16px 0; color: var(--muted); }
+.button.busy, .link-button.busy { cursor: progress; }
+.button.busy:disabled, .link-button.busy:disabled { opacity: 0.85; }
+.button .spinner, .link-button .spinner { margin-right: 8px; }
+
 .link-button {
   font: inherit;
   background: none;

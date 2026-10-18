@@ -329,9 +329,7 @@
         ev.preventDefault();
         var code = attendCode || (input ? input.value.replace(/\D/g, '') : '');
         if (!code) { notify('Enter the class code shown on the slide.', 'error'); return; }
-        btn.disabled = true;
-        setBusy(true);
-        api({ action: 'attend', token: token, code: code, device: deviceId() })
+        busy(btn, 'Checking in…', api({ action: 'attend', token: token, code: code, device: deviceId() }))
           .then(function (data) {
             applyResponse(data);
             notify(state.checkedIn ? 'You’re checked in. You can close this page.' : '', 'success');
@@ -390,14 +388,13 @@
       reset.title = 'Replaces your link. Use this if you shared it by mistake or want to sign in elsewhere.';
       reset.addEventListener('click', function () {
         if (!window.confirm('Email you a new personal link? Your current link will stop working, and you will be signed out on this device until you open the new one.')) return;
-        reset.disabled = true;
-        api({ action: 'resetToken', token: token })
+        busy(reset, 'Sending…', api({ action: 'resetToken', token: token }))
           .then(function (data) {
             setToken('');
             load();
             notify('A new link was emailed to ' + data.sentTo + '. Open it to sign in again. Your group choices are unchanged.', 'success');
           })
-          .catch(function (err) { notify(err.message, 'error'); reset.disabled = false; });
+          .catch(function (err) { notify(err.message, 'error'); });
       });
       wrap.appendChild(reset);
     }
@@ -465,8 +462,7 @@
       cancel.textContent = 'Cancel';
       cancel.addEventListener('click', function () { confirmBox.hidden = true; });
       send.addEventListener('click', function () {
-        send.disabled = true;
-        api({ action: 'sendLink', rosterId: r.id })
+        busy(send, 'Sending…', api({ action: 'sendLink', rosterId: r.id }))
           .then(function (data) {
             confirmBox.textContent = '';
             var done = document.createElement('p');
@@ -476,7 +472,7 @@
             list.hidden = true;
             input.hidden = true;
           })
-          .catch(function (err) { notify(err.message, 'error'); send.disabled = false; });
+          .catch(function (err) { notify(err.message, 'error'); });
       });
       row.appendChild(send);
       row.appendChild(cancel);
@@ -506,14 +502,13 @@
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var btn = form.querySelector('button');
-      btn.disabled = true;
-      api({ action: 'register', name: form.name.value, email: form.email.value })
+      busy(btn, 'Saving…', api({ action: 'register', name: form.name.value, email: form.email.value }))
         .then(function (data) {
           setToken(data.token);
           applyResponse(data);
           notify('You are registered. Bookmark your personal link to use another device.', 'success');
         })
-        .catch(function (err) { notify(err.message, 'error'); btn.disabled = false; });
+        .catch(function (err) { notify(err.message, 'error'); });
     });
     return form;
   }
@@ -640,14 +635,14 @@
           btn.textContent = 'Leave group';
           btn.disabled = !a.signupOpen;
           btn.addEventListener('click', function () {
-            act({ action: 'leave', token: token, assignmentId: a.id }, 'You left ' + g.name + '.');
+            act({ action: 'leave', token: token, assignmentId: a.id }, 'You left ' + g.name + '.', btn, 'Leaving…');
           });
         } else {
           btn.className = 'button primary';
           btn.textContent = myGroupId ? 'Switch to this group' : 'Join';
           btn.disabled = !a.signupOpen || full;
           btn.addEventListener('click', function () {
-            act({ action: 'join', token: token, assignmentId: a.id, groupId: g.id }, 'You joined ' + g.name + '.');
+            act({ action: 'join', token: token, assignmentId: a.id, groupId: g.id }, 'You joined ' + g.name + '.', btn, 'Joining…');
           });
         }
         actions.appendChild(btn);
@@ -658,9 +653,8 @@
     });
   }
 
-  function act(payload, successMessage) {
-    setBusy(true);
-    api(payload)
+  function act(payload, successMessage, btn, label) {
+    busy(btn, label, api(payload))
       .then(function (data) { applyResponse(data); notify(successMessage, 'success'); })
       .catch(function (err) { notify(err.message, 'error'); load(); });
   }
@@ -692,9 +686,36 @@
     return d.toLocaleString(undefined, opts);
   }
 
+  /** Page-level wait: dims the main section and shows the "Loading…" line. */
   function setBusy(busy) {
     var el = $('#groups') || $('#attend');
     if (el) el.setAttribute('aria-busy', busy ? 'true' : 'false');
+    var loading = $('#loading');
+    if (loading) loading.hidden = !busy;
+  }
+
+  /**
+   * Button-level wait: swaps the button's label for a spinner and a progress label while the
+   * promise is pending, then restores it. The script takes a few seconds per call, so every
+   * button that talks to it goes through here.
+   */
+  function busy(btn, label, promise) {
+    if (!btn) return promise;
+    var original = btn.textContent;
+    btn.disabled = true;
+    btn.classList.add('busy');
+    btn.textContent = '';
+    var sp = document.createElement('span');
+    sp.className = 'spinner';
+    sp.setAttribute('aria-hidden', 'true');
+    btn.appendChild(sp);
+    btn.appendChild(document.createTextNode(label || original));
+    function restore() {
+      btn.disabled = false;
+      btn.classList.remove('busy');
+      btn.textContent = original;
+    }
+    return promise.then(function (v) { restore(); return v; }, function (e) { restore(); throw e; });
   }
 
   function notify(message, kind) {
@@ -756,10 +777,10 @@
     login.addEventListener('submit', function (ev) {
       ev.preventDefault();
       admin.key = $('#admin-key').value.trim();
-      adminLoad();
+      adminLoad(login.querySelector('button[type="submit"]'), 'Unlocking…');
     });
 
-    $('#admin-refresh').addEventListener('click', adminLoad);
+    $('#admin-refresh').addEventListener('click', function () { adminLoad($('#admin-refresh'), 'Refreshing…'); });
     $('#admin-forget').addEventListener('click', function () {
       admin.key = '';
       admin.data = null;
@@ -793,17 +814,19 @@
         return { id: a.id, name: a.name, due: a.due, signupCloses: a.signupCloses, open: a.open, instructions: a.instructions,
           groups: a.groups.map(function (g) { return { id: g.id, name: g.name, slots: g.slots, description: g.description }; }) };
       });
-      adminSave({ action: 'adminSaveAssignments', assignments: payload }, 'Assignments saved.');
+      adminSave({ action: 'adminSaveAssignments', assignments: payload }, 'Assignments saved.', $('#admin-save-assignments'));
     });
     $('#admin-save-roster').addEventListener('click', function () {
       var roster = parseRosterText($('#admin-roster').value);
-      adminSave({ action: 'adminSaveRoster', roster: roster, removeMissing: $('#admin-roster-remove').checked }, 'Roster saved.');
+      adminSave({ action: 'adminSaveRoster', roster: roster, removeMissing: $('#admin-roster-remove').checked }, 'Roster saved.', $('#admin-save-roster'));
     });
     $('#admin-roster').addEventListener('input', function () {
       $('#admin-roster-count').textContent = parseRosterText($('#admin-roster').value).length + ' listed';
     });
 
-    $('#admin-attendance-refresh').addEventListener('click', attendanceLoad);
+    $('#admin-attendance-refresh').addEventListener('click', function () {
+      attendanceCall({ action: 'adminAttendance' }, '', $('#admin-attendance-refresh'), 'Refreshing…');
+    });
     $('#admin-session-select').addEventListener('change', function () {
       attendance.sessionId = $('#admin-session-select').value;
       renderAttendanceTable();
@@ -843,9 +866,9 @@
       return attendanceCall({ action: 'adminAttendance' });
     }
 
-    function attendanceCall(payload, successMessage) {
+    function attendanceCall(payload, successMessage, btn, label) {
       payload.adminKey = admin.key;
-      return api(payload)
+      return busy(btn, label, api(payload))
         .then(function (data) {
           attendance.data = data;
           var open = openSessionOf(data);
@@ -925,7 +948,7 @@
         extend.className = 'button';
         extend.textContent = 'Extend 5 min';
         extend.addEventListener('click', function () {
-          attendanceCall({ action: 'adminExtendSession', sessionId: open.id, minutes: 5 }, 'Extended by 5 minutes.');
+          attendanceCall({ action: 'adminExtendSession', sessionId: open.id, minutes: 5 }, 'Extended by 5 minutes.', extend, 'Extending…');
         });
         actions.appendChild(extend);
         var close = document.createElement('button');
@@ -933,7 +956,7 @@
         close.className = 'button danger';
         close.textContent = 'Close now';
         close.addEventListener('click', function () {
-          attendanceCall({ action: 'adminCloseSession', sessionId: open.id }, 'Check-in closed.');
+          attendanceCall({ action: 'adminCloseSession', sessionId: open.id }, 'Check-in closed.', close, 'Closing…');
         });
         actions.appendChild(close);
         var link = document.createElement('span');
@@ -977,8 +1000,8 @@
       form.appendChild(start);
       form.addEventListener('submit', function (ev) {
         ev.preventDefault();
-        start.disabled = true;
-        attendanceCall({ action: 'adminStartSession', label: labInput.value.trim(), minutes: parseInt(minInput.value, 10) }, 'Check-in started. Click "Show on screen" to project the code.')
+        attendanceCall({ action: 'adminStartSession', label: labInput.value.trim(), minutes: parseInt(minInput.value, 10) },
+          'Check-in started. Click "Show on screen" to project the code.', start, 'Starting…')
           .then(function () {
             var opened = attendance.data && openSessionOf(attendance.data);
             if (opened) window.open(displayUrl(opened), '_blank', 'noopener');
@@ -995,7 +1018,7 @@
         btn.className = 'link-button';
         btn.textContent = 'Reopen "' + last.label + '" for 5 more minutes';
         btn.addEventListener('click', function () {
-          attendanceCall({ action: 'adminExtendSession', sessionId: last.id, minutes: 5 }, 'Reopened for 5 minutes.');
+          attendanceCall({ action: 'adminExtendSession', sessionId: last.id, minutes: 5 }, 'Reopened for 5 minutes.', btn, 'Reopening…');
         });
         reopen.appendChild(btn);
         box.appendChild(reopen);
@@ -1092,7 +1115,7 @@
         btn.textContent = rec ? 'Mark absent' : 'Mark present';
         btn.addEventListener('click', function () {
           attendanceCall({ action: 'adminMarkAttendance', sessionId: session.id, email: r.email, present: !rec },
-            (rec ? 'Removed ' : 'Marked ') + r.name + (rec ? '’s check-in.' : ' present.'));
+            (rec ? 'Removed ' : 'Marked ') + r.name + (rec ? '’s check-in.' : ' present.'), btn, 'Saving…');
         });
         act.appendChild(btn);
         tr.appendChild(act);
@@ -1126,11 +1149,11 @@
       n.hidden = !message;
     }
 
-    function adminLoad() {
-      Promise.all([
+    function adminLoad(btn, label) {
+      busy(btn, label, Promise.all([
         api({ action: 'export', adminKey: admin.key }),
         api({ action: 'adminGet', adminKey: admin.key })
-      ])
+      ]))
         .then(function (results) {
           admin.data = results[0];
           admin.config = results[1];
@@ -1146,10 +1169,10 @@
         });
     }
 
-    function adminSave(payload, successMessage) {
+    function adminSave(payload, successMessage, btn) {
       payload.adminKey = admin.key;
       adminNotify('Saving…');
-      api(payload)
+      busy(btn, 'Saving…', api(payload))
         .then(function (data) {
           admin.config = data;
           renderAdmin();
@@ -1267,7 +1290,7 @@
           var el = form.elements[f[0]];
           settings[f[0]] = f[2] === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value.trim();
         });
-        adminSave({ action: 'adminSaveCourse', course: course, settings: settings }, 'Course and settings saved.');
+        adminSave({ action: 'adminSaveCourse', course: course, settings: settings }, 'Course and settings saved.', save);
       };
     }
 
@@ -1472,7 +1495,9 @@
     if (!demoApi.db) {
       try { demoApi.db = JSON.parse(storageGet(localStorage, 'groupSignup.demoDb')) || null; } catch (e) { demoApi.db = null; }
     }
-    return demoApiInner(payload).then(
+    // A short delay so the demo feels like the real script, which takes a few seconds per call.
+    var wait = new Promise(function (resolve) { setTimeout(resolve, 700); });
+    return wait.then(function () { return demoApiInner(payload); }).then(
       function (res) { storageSet(localStorage, 'groupSignup.demoDb', JSON.stringify(demoApi.db)); return res; },
       function (err) { storageSet(localStorage, 'groupSignup.demoDb', JSON.stringify(demoApi.db)); throw err; }
     );
