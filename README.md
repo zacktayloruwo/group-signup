@@ -424,6 +424,9 @@ from the instructor panel, then open
 ```
 docs/index.html        the signup page
 docs/attend.html       the attendance check-in page students open from the QR code
+                       (both load app.js, config.js and styles.css with a ?v= query; bump it when
+                       you change those files so phones fetch the new copy at once instead of
+                       keeping the old one for the ten minutes GitHub Pages allows)
 docs/display.html      the QR code, class code and countdown you project in class
 docs/app.js            front-end logic for both pages, including the demo backend
 docs/styles.css        styling (light and dark)
