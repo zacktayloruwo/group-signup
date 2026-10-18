@@ -1,17 +1,22 @@
-/* Group Signup — front end. One Apps Script backend per course, chosen by ?c=<key>. */
+/* Group Signup — front end. One Apps Script backend per course, chosen by ?c=<key>.
+ * The same script runs index.html (group signup) and attend.html (attendance check-in);
+ * the page is told apart by <body data-page>. */
 (function () {
   'use strict';
 
   var CONFIG = window.GROUP_SIGNUP_CONFIG || {};
   var COURSES = normalizeCourses(CONFIG.COURSES || {});
-  var DEMO = Object.keys(COURSES).length === 0;
+  var FORCE_DEMO = /[?&]demo=1(&|$)/.test(location.search); // try the sample data even when courses are configured
+  var DEMO = Object.keys(COURSES).length === 0 || FORCE_DEMO;
+  var ATTEND = document.body.getAttribute('data-page') === 'attend';
 
   var $ = function (sel) { return document.querySelector(sel); };
-  var state = { course: null, settings: null, assignments: [], me: null, roster: null };
+  var state = { course: null, settings: null, assignments: [], me: null, roster: null, session: null, checkedIn: null, history: [] };
   var courseKey = '';
   var apiUrl = '';
   var token = '';
   var assignmentId = '';
+  var attendCode = '';   // class code carried by the QR code's URL (?k=1234)
   var admin = { key: '', data: null, config: null, assignments: null };
 
   function normalizeCourses(raw) {
@@ -32,6 +37,16 @@
   function storageDel(store, key) { try { store.removeItem(key); } catch (e) { /* ignore */ } }
   function tokenKey() { return 'groupSignup.token.' + courseKey; }
   function adminKeyKey() { return 'groupSignup.adminKey.' + courseKey; }
+
+  /** A random id that stays with this browser, so two students checking in from one phone can be flagged. */
+  function deviceId() {
+    var id = storageGet(localStorage, 'groupSignup.device');
+    if (!id) {
+      id = Math.random().toString(36).slice(2) + Date.now().toString(36) + Math.random().toString(36).slice(2);
+      storageSet(localStorage, 'groupSignup.device', id);
+    }
+    return id;
+  }
 
   // -------------------------------------------------------------------------
   // API
@@ -56,6 +71,9 @@
     if (data.settings) state.settings = data.settings;
     if (data.assignments) state.assignments = data.assignments;
     if ('me' in data) state.me = data.me;
+    if ('session' in data) state.session = data.session;
+    if ('checkedIn' in data) state.checkedIn = data.checkedIn;
+    if (data.history) state.history = data.history;
     ensureAssignment();
     render();
   }
@@ -68,6 +86,8 @@
     courseKey = (url.searchParams.get('c') || '').trim();
     assignmentId = (url.searchParams.get('a') || '').trim();
     var fromUrl = url.searchParams.get('t');
+    var codeFromUrl = url.searchParams.get('k');
+    var changed = false;
 
     if (DEMO) courseKey = 'demo';
     else if (!courseKey && Object.keys(COURSES).length === 1) courseKey = Object.keys(COURSES)[0];
@@ -75,20 +95,40 @@
     if (fromUrl && courseKey) {
       setToken(fromUrl.trim());
       url.searchParams.delete('t');
-      try { history.replaceState(null, '', url.pathname + url.search + url.hash); } catch (e) { /* ignore */ }
+      changed = true;
     } else if (courseKey) {
       token = storageGet(localStorage, tokenKey());
+    }
+    if (codeFromUrl !== null) {
+      attendCode = codeFromUrl.replace(/\D/g, '');
+      url.searchParams.delete('k');
+      changed = true;
+    }
+    if (changed) {
+      try { history.replaceState(null, '', url.pathname + url.search + url.hash); } catch (e) { /* ignore */ }
     }
   }
 
   function writeUrl() {
+    if (ATTEND) return;
     var url = new URL(location.href);
     if (!DEMO) url.searchParams.set('c', courseKey);
     if (assignmentId) url.searchParams.set('a', assignmentId); else url.searchParams.delete('a');
     try { history.replaceState(null, '', url.pathname + url.search + url.hash); } catch (e) { /* ignore */ }
   }
 
+  /** URL of a page in this site for the current course, e.g. pageUrl('attend.html', { k: '1234' }). */
+  function pageUrl(page, params) {
+    var base = location.origin + location.pathname.replace(/[^/]*$/, '') + page;
+    var q = [];
+    if (!DEMO) q.push('c=' + encodeURIComponent(courseKey));
+    if (FORCE_DEMO) q.push('demo=1');
+    Object.keys(params || {}).forEach(function (k) { if (params[k]) q.push(k + '=' + encodeURIComponent(params[k])); });
+    return base + (q.length ? '?' + q.join('&') : '');
+  }
+
   function ensureAssignment() {
+    if (ATTEND) return;
     var list = state.assignments;
     if (!list.length) { assignmentId = ''; return; }
     if (!findAssignment(assignmentId)) {
@@ -115,12 +155,20 @@
     $('#course-code').textContent = [c.code, [c.term, c.year].filter(Boolean).join(' '), c.section ? 'Section ' + c.section : ''].filter(Boolean).join(' · ');
     $('#course-title').textContent = title;
     $('#course-meta').textContent = c.professor ? c.professor : '';
-    $('#admin-open').hidden = false;
+    if ($('#admin-open')) $('#admin-open').hidden = false;
+    if ($('#attend-link')) { $('#attend-link').href = pageUrl('attend.html'); $('#attend-link').hidden = false; }
+    if ($('#signup-link')) $('#signup-link').href = pageUrl('index.html');
+    renderIdentity();
+    if (ATTEND) {
+      document.title = (c.code ? c.code + ' ' : '') + 'Attendance';
+      renderAttend();
+      setBusy(false);
+      return;
+    }
     renderAssignmentNav();
     renderAssignment();
-    renderIdentity();
     renderGroups();
-    $('#groups').setAttribute('aria-busy', 'false');
+    setBusy(false);
   }
 
   function renderAssignmentNav() {
@@ -176,6 +224,7 @@
     var a = findAssignment(assignmentId);
 
     if (state.me) {
+      if (ATTEND) return; // the check-in card carries the greeting
       var h = document.createElement('h2');
       h.textContent = 'Hi, ' + state.me.name;
       var p = document.createElement('p');
@@ -218,8 +267,109 @@
     }
 
     var need = document.createElement('p');
-    need.textContent = 'To join a group, open the personal link your instructor emailed you. You can browse the groups in the meantime.';
+    need.textContent = ATTEND
+      ? 'To check in, open the personal link your instructor emailed you on this phone.'
+      : 'To join a group, open the personal link your instructor emailed you. You can browse the groups in the meantime.';
     box.appendChild(need);
+  }
+
+  // -------------------------------------------------------------------------
+  // Attendance check-in (attend.html)
+  // -------------------------------------------------------------------------
+  function renderAttend() {
+    var box = $('#attend');
+    box.textContent = '';
+    if (!state.me) { box.hidden = true; return; }
+    box.hidden = false;
+
+    var h = document.createElement('h2');
+    h.textContent = 'Hi, ' + state.me.name;
+    box.appendChild(h);
+
+    var session = state.session;
+    if (state.checkedIn) {
+      var done = document.createElement('div');
+      done.className = 'checked-in';
+      var strong = document.createElement('strong');
+      strong.textContent = '✓ You’re checked in';
+      var when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = state.checkedIn.label + ' · ' + formatTime(state.checkedIn.time);
+      done.appendChild(strong);
+      done.appendChild(when);
+      box.appendChild(done);
+    } else if (session) {
+      var p = document.createElement('p');
+      p.textContent = 'Check-in is open for ' + session.label + ' until ' + formatTime(session.closes) + '.';
+      box.appendChild(p);
+
+      var form = document.createElement('form');
+      var input = null;
+      if (!attendCode) {
+        var lab = document.createElement('label');
+        lab.appendChild(document.createTextNode('Class code from the slide'));
+        input = document.createElement('input');
+        input.className = 'code-input';
+        input.type = 'text';
+        input.inputMode = 'numeric';
+        input.pattern = '[0-9]*';
+        input.maxLength = 4;
+        input.autocomplete = 'one-time-code';
+        input.required = true;
+        input.placeholder = '0000';
+        lab.appendChild(input);
+        form.appendChild(lab);
+      }
+      var btn = document.createElement('button');
+      btn.type = 'submit';
+      btn.className = 'button primary big';
+      btn.textContent = 'I’m here';
+      form.appendChild(btn);
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var code = attendCode || (input ? input.value.replace(/\D/g, '') : '');
+        if (!code) { notify('Enter the class code shown on the slide.', 'error'); return; }
+        btn.disabled = true;
+        setBusy(true);
+        api({ action: 'attend', token: token, code: code, device: deviceId() })
+          .then(function (data) {
+            applyResponse(data);
+            notify(state.checkedIn ? 'You’re checked in. You can close this page.' : '', 'success');
+          })
+          .catch(function (err) {
+            attendCode = ''; // a wrong code from the QR must not be retried silently; let the student type it
+            notify(err.message, 'error');
+            load();
+          });
+      });
+      box.appendChild(form);
+      if (input) setTimeout(function () { input.focus(); }, 0);
+    } else {
+      var none = document.createElement('p');
+      none.textContent = 'No check-in is open right now. When your instructor shows the code, scan it or refresh this page.';
+      box.appendChild(none);
+      var refresh = document.createElement('button');
+      refresh.type = 'button';
+      refresh.className = 'button';
+      refresh.textContent = 'Refresh';
+      refresh.addEventListener('click', function () { notify(''); load(); });
+      box.appendChild(refresh);
+    }
+
+    if (state.history.length) {
+      var attended = state.history.filter(function (s) { return s.present; }).length;
+      var hist = document.createElement('p');
+      hist.className = 'hint';
+      hist.textContent = 'Your record so far: present at ' + attended + ' of ' + state.history.length + ' past ' + (state.history.length === 1 ? 'session' : 'sessions') + '.';
+      box.appendChild(hist);
+    }
+    box.appendChild(accountActions());
+  }
+
+  function formatTime(value) {
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return String(value || '');
+    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 
   function accountActions() {
@@ -542,7 +692,10 @@
     return d.toLocaleString(undefined, opts);
   }
 
-  function setBusy(busy) { $('#groups').setAttribute('aria-busy', busy ? 'true' : 'false'); }
+  function setBusy(busy) {
+    var el = $('#groups') || $('#attend');
+    if (el) el.setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
 
   function notify(message, kind) {
     var n = $('#notice');
@@ -558,10 +711,10 @@
 
   function load() {
     setBusy(true);
-    api({ action: 'state', token: token })
+    api({ action: ATTEND ? 'attendState' : 'state', token: token })
       .then(applyResponse)
       .catch(function (err) {
-        $('#course-meta').textContent = 'Could not load the signup data.';
+        $('#course-meta').textContent = ATTEND ? 'Could not load the attendance page.' : 'Could not load the signup data.';
         notify(err.message, 'error');
         setBusy(false);
       });
@@ -581,7 +734,7 @@
     });
     chooser.hidden = false;
     $('#course-meta').textContent = message || '';
-    $('#groups').setAttribute('aria-busy', 'false');
+    setBusy(false);
   }
 
   // -------------------------------------------------------------------------
@@ -589,8 +742,10 @@
   // -------------------------------------------------------------------------
   function initAdmin() {
     var dialog = $('#admin-dialog');
+    if (!dialog) return; // the check-in page has no instructor panel
     var login = $('#admin-login');
     var body = $('#admin-body');
+    var attendance = { data: null, sessionId: '', timer: null, ticks: 0 };
 
     $('#admin-open').addEventListener('click', function () {
       admin.key = storageGet(sessionStorage, adminKeyKey());
@@ -648,6 +803,17 @@
       $('#admin-roster-count').textContent = parseRosterText($('#admin-roster').value).length + ' listed';
     });
 
+    $('#admin-attendance-refresh').addEventListener('click', attendanceLoad);
+    $('#admin-session-select').addEventListener('change', function () {
+      attendance.sessionId = $('#admin-session-select').value;
+      renderAttendanceTable();
+    });
+    $('#admin-attendance-download').addEventListener('click', function () {
+      if (!attendance.data) return;
+      downloadCsv(attendanceCsv(attendance.data), 'attendance');
+    });
+    dialog.addEventListener('close', stopAttendanceTimer);
+
     function showTab(name) {
       document.querySelectorAll('.admin-tabs button[data-tab]').forEach(function (b) {
         b.setAttribute('aria-current', b.getAttribute('data-tab') === name ? 'true' : 'false');
@@ -655,12 +821,302 @@
       document.querySelectorAll('#admin-body section[data-panel]').forEach(function (sec) {
         sec.hidden = sec.getAttribute('data-panel') !== name;
       });
+      if (name === 'attendance') {
+        if (!attendance.data) attendanceLoad();
+        startAttendanceTimer();
+      } else {
+        stopAttendanceTimer();
+      }
     }
 
     function showLogin() {
       login.hidden = false;
       body.hidden = true;
       $('#admin-key').value = '';
+      attendance.data = null;
+      stopAttendanceTimer();
+    }
+
+    // --- Attendance tab ---------------------------------------------------
+
+    function attendanceLoad() {
+      return attendanceCall({ action: 'adminAttendance' });
+    }
+
+    function attendanceCall(payload, successMessage) {
+      payload.adminKey = admin.key;
+      return api(payload)
+        .then(function (data) {
+          attendance.data = data;
+          var open = openSessionOf(data);
+          if (data.started) attendance.sessionId = data.started;
+          else if (!attendance.sessionId || !data.sessions.some(function (s) { return s.id === attendance.sessionId; })) {
+            attendance.sessionId = open ? open.id : (data.sessions[0] ? data.sessions[0].id : '');
+          }
+          renderAttendance();
+          if (successMessage) adminNotify(successMessage, 'success');
+        })
+        .catch(function (err) { adminNotify(err.message, 'error'); });
+    }
+
+    function openSessionOf(data) {
+      return data.sessions.filter(function (s) { return s.open; })[0] || null;
+    }
+
+    /** Refresh every 10 s while a session is open; tick the countdown every second. */
+    function startAttendanceTimer() {
+      stopAttendanceTimer();
+      attendance.ticks = 0;
+      attendance.timer = setInterval(function () {
+        attendance.ticks++;
+        renderCountdown();
+        if (attendance.ticks % 10 === 0 && attendance.data && openSessionOf(attendance.data) && !document.hidden) attendanceLoad();
+      }, 1000);
+    }
+
+    function stopAttendanceTimer() {
+      if (attendance.timer) clearInterval(attendance.timer);
+      attendance.timer = null;
+    }
+
+    function renderAttendance() {
+      renderSessionLive();
+      renderSessionSelect();
+      renderAttendanceTable();
+    }
+
+    function renderSessionLive() {
+      var data = attendance.data;
+      var box = $('#admin-session-live');
+      box.textContent = '';
+      var open = openSessionOf(data);
+      box.className = 'session-live' + (open ? ' open' : '');
+
+      if (open) {
+        var h = document.createElement('h3');
+        h.textContent = 'Check-in open: ' + open.label;
+        box.appendChild(h);
+
+        var row = document.createElement('div');
+        row.className = 'live-row';
+        var code = document.createElement('div');
+        code.className = 'session-code';
+        code.textContent = open.code;
+        code.title = 'Class code';
+        row.appendChild(code);
+        row.appendChild(stat('Checked in', String(open.present) + ' of ' + data.roster.length));
+        var cdStat = stat('Closes in', '');
+        cdStat.querySelector('strong').id = 'admin-countdown';
+        row.appendChild(cdStat);
+        if (open.flagged) row.appendChild(stat('Flagged', String(open.flagged)));
+        box.appendChild(row);
+
+        var actions = document.createElement('div');
+        actions.className = 'admin-actions';
+        var show = document.createElement('a');
+        show.className = 'button primary';
+        show.textContent = 'Show on screen';
+        show.href = displayUrl(open);
+        show.target = '_blank';
+        show.rel = 'noopener';
+        actions.appendChild(show);
+        var extend = document.createElement('button');
+        extend.type = 'button';
+        extend.className = 'button';
+        extend.textContent = 'Extend 5 min';
+        extend.addEventListener('click', function () {
+          attendanceCall({ action: 'adminExtendSession', sessionId: open.id, minutes: 5 }, 'Extended by 5 minutes.');
+        });
+        actions.appendChild(extend);
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'button danger';
+        close.textContent = 'Close now';
+        close.addEventListener('click', function () {
+          attendanceCall({ action: 'adminCloseSession', sessionId: open.id }, 'Check-in closed.');
+        });
+        actions.appendChild(close);
+        var link = document.createElement('span');
+        link.className = 'hint';
+        link.textContent = 'Students without a camera: ' + pageUrl('attend.html').replace(/^https?:\/\//, '') + ' and code ' + open.code;
+        actions.appendChild(link);
+        box.appendChild(actions);
+        renderCountdown();
+        return;
+      }
+
+      var title = document.createElement('h3');
+      title.textContent = 'Start check-in';
+      box.appendChild(title);
+      var hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = 'A 4-digit class code is generated and shown with a QR code for your slide. Students on the roster tap once to check in; the code stops working when the time is up.';
+      box.appendChild(hint);
+      var form = document.createElement('form');
+      var labLabel = document.createElement('label');
+      labLabel.appendChild(document.createTextNode('Session name'));
+      var labInput = document.createElement('input');
+      labInput.type = 'text';
+      labInput.placeholder = 'e.g. Week 6 — blank for today’s date';
+      labInput.size = 32;
+      labLabel.appendChild(labInput);
+      form.appendChild(labLabel);
+      var minLabel = document.createElement('label');
+      minLabel.appendChild(document.createTextNode('Open for (minutes)'));
+      var minInput = document.createElement('input');
+      minInput.type = 'number';
+      minInput.min = '1';
+      minInput.max = '600';
+      minInput.value = data.windowMinutes || 10;
+      minLabel.appendChild(minInput);
+      form.appendChild(minLabel);
+      var start = document.createElement('button');
+      start.type = 'submit';
+      start.className = 'button primary';
+      start.textContent = 'Start check-in';
+      form.appendChild(start);
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        start.disabled = true;
+        attendanceCall({ action: 'adminStartSession', label: labInput.value.trim(), minutes: parseInt(minInput.value, 10) }, 'Check-in started. Click "Show on screen" to project the code.')
+          .then(function () {
+            var opened = attendance.data && openSessionOf(attendance.data);
+            if (opened) window.open(displayUrl(opened), '_blank', 'noopener');
+          });
+      });
+      box.appendChild(form);
+
+      var last = data.sessions.filter(function (s) { return !s.open && s.closes; })[0];
+      if (last) {
+        var reopen = document.createElement('p');
+        reopen.className = 'hint';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'link-button';
+        btn.textContent = 'Reopen "' + last.label + '" for 5 more minutes';
+        btn.addEventListener('click', function () {
+          attendanceCall({ action: 'adminExtendSession', sessionId: last.id, minutes: 5 }, 'Reopened for 5 minutes.');
+        });
+        reopen.appendChild(btn);
+        box.appendChild(reopen);
+      }
+    }
+
+    function stat(label, value) {
+      var wrap = document.createElement('div');
+      wrap.className = 'stat';
+      var strong = document.createElement('strong');
+      strong.textContent = value;
+      var span = document.createElement('span');
+      span.textContent = label;
+      wrap.appendChild(strong);
+      wrap.appendChild(span);
+      return wrap;
+    }
+
+    function renderCountdown() {
+      var el = $('#admin-countdown');
+      var open = attendance.data && openSessionOf(attendance.data);
+      if (!el || !open) return;
+      var left = Math.floor((new Date(open.closes).getTime() - Date.now()) / 1000);
+      if (left <= 0) {
+        el.textContent = '0:00';
+        if (attendance.ticks % 5 === 0) attendanceLoad(); // show it as closed
+        return;
+      }
+      el.textContent = Math.floor(left / 60) + ':' + pad(left % 60);
+      el.className = 'countdown';
+    }
+
+    function displayUrl(session) {
+      var p = new URLSearchParams();
+      p.set('u', pageUrl('attend.html', { k: session.code }));
+      p.set('s', pageUrl('attend.html'));
+      p.set('k', session.code);
+      p.set('l', session.label);
+      p.set('t', state.course ? [state.course.code, state.course.name].filter(Boolean).join(' ') : '');
+      p.set('e', session.closes);
+      return location.origin + location.pathname.replace(/[^/]*$/, '') + 'display.html#' + p.toString();
+    }
+
+    function renderSessionSelect() {
+      var sel = $('#admin-session-select');
+      sel.textContent = '';
+      var sessions = attendance.data.sessions;
+      if (!sessions.length) {
+        var opt = document.createElement('option');
+        opt.textContent = 'No sessions yet';
+        sel.appendChild(opt);
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = false;
+      sessions.forEach(function (s) {
+        var o = document.createElement('option');
+        o.value = s.id;
+        o.textContent = s.label + ' — ' + formatDate(s.opened) + (s.open ? ' (open)' : '');
+        if (s.id === attendance.sessionId) o.selected = true;
+        sel.appendChild(o);
+      });
+    }
+
+    function renderAttendanceTable() {
+      var data = attendance.data;
+      var tbody = $('#admin-attendance-table tbody');
+      tbody.textContent = '';
+      var session = data.sessions.filter(function (s) { return s.id === attendance.sessionId; })[0];
+      if (!session) {
+        $('#admin-attendance-summary').textContent = 'Start a check-in to take attendance. Each session becomes a column in the CSV.';
+        return;
+      }
+      var byEmail = {};
+      data.records.forEach(function (r) { if (r.sessionId === session.id) byEmail[r.email] = r; });
+      var roster = data.roster.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+      roster.forEach(function (r) {
+        var rec = byEmail[r.email];
+        var tr = document.createElement('tr');
+        var name = document.createElement('td'); name.textContent = r.name; tr.appendChild(name);
+        var email = document.createElement('td'); email.textContent = r.email; tr.appendChild(email);
+        var status = document.createElement('td');
+        status.className = rec ? 'present' : 'absent';
+        status.textContent = rec ? 'Present ' + formatTime(rec.time) + (rec.by === 'instructor' ? ' (marked by you)' : '') : 'Absent';
+        tr.appendChild(status);
+        var flag = document.createElement('td');
+        flag.className = 'flag';
+        flag.textContent = rec && rec.flag ? rec.flag : '';
+        tr.appendChild(flag);
+        var act = document.createElement('td');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'link-button';
+        btn.textContent = rec ? 'Mark absent' : 'Mark present';
+        btn.addEventListener('click', function () {
+          attendanceCall({ action: 'adminMarkAttendance', sessionId: session.id, email: r.email, present: !rec },
+            (rec ? 'Removed ' : 'Marked ') + r.name + (rec ? '’s check-in.' : ' present.'));
+        });
+        act.appendChild(btn);
+        tr.appendChild(act);
+        tbody.appendChild(tr);
+      });
+      var unknown = data.records.filter(function (r) { return r.sessionId === session.id && !data.roster.some(function (x) { return x.email === r.email; }); });
+      $('#admin-attendance-summary').textContent = session.label + ': ' + session.present + ' of ' + roster.length + ' present' +
+        (session.flagged ? ', ' + session.flagged + ' flagged (two students checked in from the same phone)' : '') +
+        (unknown.length ? ', ' + unknown.length + ' check-in(s) from students no longer on the roster' : '') + '.';
+    }
+
+    /** One row per student, one column per session (oldest first), 1 = present, then a total. */
+    function attendanceCsv(data) {
+      var sessions = data.sessions.slice().reverse();
+      var header = ['email', 'name'].concat(sessions.map(function (s) { return s.label + ' (' + formatDate(s.opened, true) + ')'; })).concat(['present_count', 'session_count']);
+      var present = {};
+      data.records.forEach(function (r) { present[r.sessionId + '|' + r.email] = true; });
+      var roster = data.roster.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+      var rows = roster.map(function (r) {
+        var cells = sessions.map(function (s) { return present[s.id + '|' + r.email] ? 1 : 0; });
+        var total = cells.reduce(function (a, b) { return a + b; }, 0);
+        return [r.email, r.name].concat(cells).concat([total, sessions.length]);
+      });
+      return toCsv([header].concat(rows));
     }
 
     function adminNotify(message, kind) {
@@ -741,7 +1197,8 @@
       ['SELF_SERVICE_LINKS', 'Students can find their name and get their link by email', 'checkbox'],
       ['OPEN_ENROLLMENT', 'Open enrollment (anyone can register with an email)', 'checkbox'],
       ['NAME_DISPLAY', 'How members are shown to classmates', 'select', [['initial', 'First name and last initial'], ['full', 'Full name']]],
-      ['SITE_URL', 'Site URL, including ?c=<course key>', 'url']
+      ['SITE_URL', 'Site URL, including ?c=<course key>', 'url'],
+      ['ATTENDANCE_WINDOW_MINUTES', 'Attendance check-in stays open for (minutes)', 'number']
     ];
     var EMAIL_FIELDS = [
       ['EMAIL_SENDER_NAME', 'Sender name (From line)', 'text'],
@@ -967,7 +1424,8 @@
 
     function downloadCsv(csv, suffix) {
       var code = (state.course && state.course.code) || 'course';
-      var name = (code + '_' + suffix + '_signups_' + new Date().toISOString().slice(0, 10)).replace(/[^\w\-]+/g, '_') + '.csv';
+      var kind = suffix === 'attendance' ? '' : '_signups';
+      var name = (code + '_' + suffix + kind + '_' + new Date().toISOString().slice(0, 10)).replace(/[^\w\-]+/g, '_') + '.csv';
       var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -1006,9 +1464,21 @@
   }
 
   // -------------------------------------------------------------------------
-  // Demo backend (used only when no course is configured)
+  // Demo backend (used when no course is configured, or with ?demo=1).
+  // The sample data lives in this browser's localStorage so the signup page,
+  // the check-in page and the instructor panel all see the same thing.
   // -------------------------------------------------------------------------
   function demoApi(payload) {
+    if (!demoApi.db) {
+      try { demoApi.db = JSON.parse(storageGet(localStorage, 'groupSignup.demoDb')) || null; } catch (e) { demoApi.db = null; }
+    }
+    return demoApiInner(payload).then(
+      function (res) { storageSet(localStorage, 'groupSignup.demoDb', JSON.stringify(demoApi.db)); return res; },
+      function (err) { storageSet(localStorage, 'groupSignup.demoDb', JSON.stringify(demoApi.db)); throw err; }
+    );
+  }
+
+  function demoApiInner(payload) {
     var db = demoApi.db || (demoApi.db = {
       course: { name: 'Canadian Politics', code: 'POL 2230', year: '2026', term: 'Fall', section: '001', professor: 'Prof. Example' },
       settings: { signupOpen: true, openEnrollment: false, selfServiceLinks: true },
@@ -1037,10 +1507,50 @@
         { email: 'katherine@example.com', name: 'Katherine Johnson', token: 'demo-kat' }
       ],
       signups: { 'ada@example.com|presentations': 'w5', 'grace@example.com|presentations': 'w5', 'alan@example.com|presentations': 'w7',
-                 'katherine@example.com|presentations': 'w7', 'ada@example.com|debates': 'pro' }
+                 'katherine@example.com|presentations': 'w7', 'ada@example.com|debates': 'pro' },
+      sessions: [
+        { id: '2026-10-11-1003', label: 'Week 5', code: '4821', opened: '2026-10-11T14:03:00Z', closes: '2026-10-11T14:13:00Z', closedAt: '2026-10-11T14:13:00Z' }
+      ],
+      attendance: [
+        { sessionId: '2026-10-11-1003', email: 'ada@example.com', time: '2026-10-11T14:04:10Z', device: 'demo-dev-1', by: 'student' },
+        { sessionId: '2026-10-11-1003', email: 'grace@example.com', time: '2026-10-11T14:05:30Z', device: 'demo-dev-2', by: 'student' }
+      ],
+      wrongCodes: {}
     });
 
     function who(t) { return db.roster.filter(function (r) { return r.token === t; })[0] || null; }
+    function sessionOpen(s) { return !s.closedAt && new Date() < new Date(s.closes); }
+    function openSess() { var o = db.sessions.filter(sessionOpen); return o[o.length - 1] || null; }
+    function rec(sid, email) { return db.attendance.filter(function (x) { return x.sessionId === sid && x.email === email; })[0] || null; }
+    function attendState(r) {
+      var open = openSess();
+      var mine = r && open ? rec(open.id, r.email) : null;
+      return {
+        me: r ? { email: r.email, name: r.name } : null,
+        session: open ? { id: open.id, label: open.label, opened: open.opened, closes: open.closes } : null,
+        checkedIn: mine ? { label: open.label, time: mine.time } : null,
+        history: r ? db.sessions.filter(function (s) { return !sessionOpen(s); })
+          .map(function (s) { return { label: s.label, date: s.opened, present: !!rec(s.id, r.email) }; }) : []
+      };
+    }
+    function adminAttendance(extra) {
+      var nameOf = {};
+      db.roster.forEach(function (x) { nameOf[x.email] = x.name; });
+      var byDev = {};
+      db.attendance.forEach(function (x) { if (x.device) (byDev[x.sessionId + '|' + x.device] = byDev[x.sessionId + '|' + x.device] || []).push(x.email); });
+      var records = db.attendance.map(function (x) {
+        var others = x.device ? byDev[x.sessionId + '|' + x.device].filter(function (e) { return e !== x.email; }) : [];
+        return { sessionId: x.sessionId, email: x.email, name: nameOf[x.email] || '', time: x.time, by: x.by,
+          flag: others.length ? 'Same phone as ' + others.map(function (e) { return nameOf[e] || e; }).join(', ') : '' };
+      });
+      var sessions = db.sessions.map(function (s) {
+        var mine = records.filter(function (x) { return x.sessionId === s.id; });
+        return { id: s.id, label: s.label, code: s.code, open: sessionOpen(s), opened: s.opened, closes: s.closes, closedAt: s.closedAt,
+          present: mine.length, flagged: mine.filter(function (x) { return x.flag; }).length };
+      }).reverse();
+      return Object.assign({ sessions: sessions, records: records, roster: db.roster.map(function (x) { return { email: x.email, name: x.name }; }),
+        windowMinutes: parseInt((db.rawSettings || {}).ATTENDANCE_WINDOW_MINUTES, 10) || 10 }, extra || {});
+    }
     function closedReason(a) {
       if (!db.settings.signupOpen) return 'Signup is currently closed for all assignments.';
       if (!a.open) return 'Signup for this assignment is closed.';
@@ -1113,6 +1623,56 @@
         if (closedReason(a)) return fail(closedReason(a));
         delete db.signups[r.email + '|' + a.id];
         return ok({ me: me(r) });
+      case 'attendState':
+        return ok(attendState(r));
+      case 'attend': {
+        if (!r) return fail('Your link is not recognised (demo).');
+        var live = openSess();
+        if (!live) return fail('No attendance session is open right now. Wait for the instructor to start one, then try again.');
+        if (rec(live.id, r.email)) return ok(attendState(r));
+        var wk = live.id + '|' + r.email;
+        if ((db.wrongCodes[wk] || 0) >= 5) return fail('Too many wrong codes. Please see the instructor to be marked present.');
+        if (String(payload.code || '').replace(/\D/g, '') !== live.code) {
+          db.wrongCodes[wk] = (db.wrongCodes[wk] || 0) + 1;
+          var left = 5 - db.wrongCodes[wk];
+          return fail(left > 0 ? 'That code is not right. Check the slide and try again (' + left + ' ' + (left === 1 ? 'try' : 'tries') + ' left).'
+            : 'That code is not right, and you have run out of tries. Please see the instructor.');
+        }
+        db.attendance.push({ sessionId: live.id, email: r.email, time: new Date().toISOString(), device: String(payload.device || '').slice(0, 12), by: 'student' });
+        return ok(attendState(r));
+      }
+      case 'adminAttendance':
+      case 'adminStartSession':
+      case 'adminCloseSession':
+      case 'adminExtendSession':
+      case 'adminMarkAttendance': {
+        if (payload.adminKey !== 'demo') return fail('Wrong admin key. (In demo mode the key is "demo".)');
+        var now = new Date();
+        var extra = {};
+        var target = db.sessions.filter(function (s) { return s.id === payload.sessionId; })[0];
+        if (payload.action === 'adminStartSession') {
+          db.sessions.forEach(function (s) { if (sessionOpen(s)) s.closedAt = now.toISOString(); });
+          var minutes = Math.min(600, Math.max(1, parseInt(payload.minutes, 10) || 10));
+          var sid = now.toISOString().slice(0, 16).replace(/[T:]/g, '-');
+          db.sessions.push({ id: sid, label: String(payload.label || '').trim() || now.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+            code: String(1000 + Math.floor(Math.random() * 9000)), opened: now.toISOString(), closes: new Date(now.getTime() + minutes * 60000).toISOString(), closedAt: '' });
+          extra.started = sid;
+        } else if (payload.action !== 'adminAttendance' && !target) {
+          return fail('That session does not exist.');
+        } else if (payload.action === 'adminCloseSession') {
+          if (!target.closedAt) target.closedAt = now.toISOString();
+        } else if (payload.action === 'adminExtendSession') {
+          var from = sessionOpen(target) ? new Date(target.closes) : now;
+          target.closes = new Date(from.getTime() + (parseInt(payload.minutes, 10) || 10) * 60000).toISOString();
+          target.closedAt = '';
+        } else if (payload.action === 'adminMarkAttendance') {
+          var em = String(payload.email || '').trim().toLowerCase();
+          if (!db.roster.some(function (x) { return x.email === em; })) return fail('That student is not on the roster.');
+          if (payload.present) { if (!rec(target.id, em)) db.attendance.push({ sessionId: target.id, email: em, time: now.toISOString(), device: '', by: 'instructor' }); }
+          else db.attendance = db.attendance.filter(function (x) { return !(x.sessionId === target.id && x.email === em); });
+        }
+        return ok(adminAttendance(extra));
+      }
       case 'adminGet':
       case 'adminSaveCourse':
       case 'adminSaveAssignments':
@@ -1153,7 +1713,7 @@
         }
         var raw = Object.assign({ SIGNUP_OPEN: String(db.settings.signupOpen), OPEN_ENROLLMENT: String(db.settings.openEnrollment),
           SELF_SERVICE_LINKS: String(db.settings.selfServiceLinks), NAME_DISPLAY: 'initial', SITE_URL: location.origin + location.pathname,
-          EMAIL_SENDER_NAME: '', EMAIL_REPLY_TO: '', EMAIL_SUBJECT: '', EMAIL_SIGNATURE: '' }, db.rawSettings || {});
+          EMAIL_SENDER_NAME: '', EMAIL_REPLY_TO: '', EMAIL_SUBJECT: '', EMAIL_SIGNATURE: '', ATTENDANCE_WINDOW_MINUTES: '10' }, db.rawSettings || {});
         return ok({
           course: { COURSE_NAME: db.course.name, COURSE_CODE: db.course.code, YEAR: db.course.year, TERM: db.course.term, SECTION: db.course.section, PROFESSOR: db.course.professor },
           settings: raw,

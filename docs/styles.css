@@ -316,7 +316,100 @@ body {
   padding: 0;
 }
 
-.page-footer { margin-top: 48px; text-align: right; font-size: 0.9rem; }
+.page-footer { margin-top: 48px; text-align: right; font-size: 0.9rem; display: flex; gap: 16px; justify-content: flex-end; }
+.page-footer a { color: var(--muted); }
+
+/* Student check-in page */
+.attend {
+  margin: 16px 0 24px;
+  padding: 20px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 12px;
+}
+.attend[aria-busy="true"] { opacity: 0.6; }
+.attend h2 { margin: 0; font-size: 1.2rem; }
+.attend p { margin: 0; }
+.attend form { display: grid; gap: 12px; }
+.attend label { display: grid; gap: 4px; font-weight: 600; font-size: 0.95rem; }
+.code-input {
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 2rem;
+  letter-spacing: 0.3em;
+  text-align: center;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+  max-width: 260px;
+}
+.button.big { font-size: 1.25rem; padding: 16px 24px; border-radius: 12px; width: 100%; }
+.checked-in {
+  display: grid;
+  gap: 4px;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.checked-in strong { font-size: 1.3rem; }
+.checked-in .when { font-size: 0.95rem; }
+
+/* Instructor attendance tab */
+.session-live {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: var(--bg);
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.session-live.open { border-color: var(--ok); }
+.session-live h3 { margin: 0; font-size: 1rem; }
+.session-live .live-row { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.session-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 2.6rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  line-height: 1;
+}
+.session-live .stat { display: grid; gap: 2px; font-size: 0.9rem; color: var(--muted); }
+.session-live .stat strong { font-size: 1.2rem; color: var(--text); }
+.session-live form { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.session-live form label { display: grid; gap: 4px; font-size: 0.9rem; font-weight: 600; }
+.session-live form input {
+  font: inherit;
+  font-weight: 400;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.session-live form input[type="number"] { width: 90px; }
+.session-live .countdown { font-variant-numeric: tabular-nums; }
+label.inline { display: inline-flex; gap: 8px; align-items: center; font-size: 0.9rem; font-weight: 600; }
+label.inline select {
+  font: inherit;
+  font-weight: 400;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  max-width: 320px;
+}
+td.present { color: var(--ok); font-weight: 600; }
+td.absent { color: var(--muted); }
+td.flag { color: var(--warn); white-space: normal; }
 
 .hint { color: var(--muted); font-weight: 400; font-size: 0.9rem; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }

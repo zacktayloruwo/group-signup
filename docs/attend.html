@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attendance</title>
+  <meta name="description" content="Check in to class.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-page="attend">
+  <div id="demo-banner" class="banner" hidden>
+    <strong>Demo mode.</strong> This page is using sample data kept only in this browser.
+    Add <code>t=demo-ada</code> to the address to sign in as a sample student.
+  </div>
+
+  <header class="page-header">
+    <p id="course-code" class="course-code"></p>
+    <h1 id="course-title">Attendance</h1>
+    <p id="course-meta" class="status-line" aria-live="polite">Loading…</p>
+  </header>
+
+  <main>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section id="course-chooser" class="chooser" hidden aria-labelledby="chooser-title">
+      <h2 id="chooser-title">Choose your course</h2>
+      <ul id="course-list" class="course-list"></ul>
+    </section>
+
+    <section id="identity" class="identity" aria-label="Your details"></section>
+
+    <section id="attend" class="attend" aria-label="Check in" aria-busy="true" hidden></section>
+  </main>
+
+  <footer class="page-footer">
+    <a id="signup-link" href="index.html">Group signup</a>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

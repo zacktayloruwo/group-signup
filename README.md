@@ -6,6 +6,10 @@ group but can only change their own selections. The instructor describes each
 course and its assignments in a Google Sheet, pre-seeds the groups and slot
 counts, and is the only one who can download the data.
 
+The same site also takes **attendance**: the instructor starts a check-in,
+projects a QR code and a 4-digit class code, and students on the roster tap
+once on their phone. See [Attendance](#attendance).
+
 - **Front end:** static HTML/JS in [`docs/`](docs/), hosted on GitHub Pages. One
   site serves every course.
 - **Backend and data store:** one Google Sheet per course in the instructor's
@@ -27,6 +31,8 @@ counts, and is the only one who can download the data.
                                           ├─ debates       …
                                           ├─ Roster        students and their personal tokens
                                           ├─ Signups       one row per student per assignment
+                                          ├─ Sessions      attendance check-ins you have started
+                                          ├─ Attendance    one row per student per check-in
                                           └─ Log           audit trail
 ```
 
@@ -34,14 +40,15 @@ counts, and is the only one who can download the data.
 
 Everything the instructor controls lives in the course's Google Sheet, and you
 can edit it either directly in the Sheet or from the **Instructor** panel on
-the site, which writes to the same Sheet. The panel has four tabs:
+the site, which writes to the same Sheet. The panel has five tabs:
 
 | Tab | What you edit |
 |---|---|
 | **Signups** | Who is in which group for the assignment on screen, with CSV downloads. |
-| **Course & settings** | Course name, code, year, term, section, professor; whether signup is open; find-your-name and open enrollment; how names are shown; the site URL; and the link email's sender name, reply-to, subject, and signature. |
+| **Course & settings** | Course name, code, year, term, section, professor; whether signup is open; find-your-name and open enrollment; how names are shown; the site URL; the link email's sender name, reply-to, subject, and signature; and the default attendance window. |
 | **Assignments & groups** | Add, edit, or remove assignments (name, due date, signup close, open flag, instructions) and the groups in each (id, name, slots, description). "Add several…" takes one group per line. |
 | **Roster** | Paste `email, name` lines straight from a spreadsheet. Existing students keep their links. Tick "Remove students not listed" to drop people. |
+| **Attendance** | Start a check-in, project the code, watch students arrive, mark exceptions by hand, and download the term's attendance as a CSV. See [Attendance](#attendance). |
 
 The admin key itself can only be changed in the Sheet. Assignment ids cannot
 be renamed from the panel once created, because they name the Sheet tabs.
@@ -101,6 +108,77 @@ Students can look after themselves without you:
 If you need to intervene, a student's token is in the Roster sheet, and
 clearing it and re-running `generateTokens()` has the same effect as a reset.
 
+## Attendance
+
+### In class
+
+1. Open the site, click **Instructor**, and go to the **Attendance** tab.
+2. Give the session a name (or leave it blank for today's date), set how many
+   minutes it stays open, and click **Start check-in**. A 4-digit class code
+   is generated and the display page opens in a new tab. If your browser
+   blocks the pop-up, click **Show on screen**.
+3. Put the display page on the projector. It shows a QR code, the class code,
+   and a countdown. **Full screen** is in the top-right corner.
+4. Students scan the QR code with their phone camera. It opens
+   `attend.html` with the class code already filled in, so they see their
+   name and one button, **I'm here**. Students who cannot scan open the same
+   page from the address on the slide and type the code.
+5. The Attendance tab refreshes every ten seconds while the check-in is open:
+   how many have checked in, who, and any flags. **Extend 5 min** keeps it
+   open longer, **Close now** ends it early. It closes by itself when the
+   time is up, and a closed session can be reopened for five minutes from the
+   same tab.
+
+A student whose phone is dead can be marked present from the table (**Mark
+present**), and a mistaken check-in removed (**Mark absent**). The table shows
+who marked each row.
+
+**Download CSV (all sessions)** gives one row per student and one column per
+session (1 = present), plus a total, ready for your gradebook. The Sessions and
+Attendance sheets hold the same data in long form.
+
+### What stops a friend from checking in for someone
+
+- **Students are identified by their personal link, not by typing an ID.**
+  The check-in page uses the same token as the signup page, stored in the
+  phone's browser. To check in as someone else you need their personal link,
+  which also controls their group choices, so it is not something students
+  hand around. Student numbers, by contrast, are easy to know.
+- **The class code only works in the room, during the window.** It is random
+  for each session and stops working when the session closes, so "text me the
+  code" has to happen live, and the code on its own is useless without a
+  personal link.
+- **Wrong codes are limited.** Five wrong codes in one session locks that
+  student out of it (they can still be marked present by hand), so the code
+  cannot be guessed.
+- **Two students from one phone are flagged.** Each browser gets a random
+  device id on first use, and the script stores a hash of it with each
+  check-in. If two students check in from the same device in one session, both
+  rows are marked "Same phone as …" in the Attendance tab, so the main
+  remaining trick, opening a friend's link on your own phone, is visible to
+  you. (A private browsing window gets a fresh id, so this is a deterrent, not
+  a guarantee.)
+
+The script never reveals the class code to students, never shows who else has
+checked in, and only ever returns a student's own record.
+
+### Setting it up
+
+New courses get the Sessions and Attendance sheets from `setup()`. For a
+course set up before attendance existed:
+
+1. Paste the current [`apps-script/Code.gs`](apps-script/Code.gs) over the
+   old one in the Apps Script editor and save.
+2. Run `addAttendanceSheets()` once. It adds the two sheets and the
+   `ATTENDANCE_WINDOW_MINUTES` setting (default `10`).
+3. **Deploy ▸ Manage deployments ▸ Edit ▸ New version** so the live URL picks
+   up the new code.
+4. Push the updated `docs/` folder to GitHub so `attend.html` and
+   `display.html` are on the site.
+
+The check-in page for a course is `attend.html?c=<course key>` next to the
+signup page, and the signup page links to it in the footer.
+
 ## Setup for a course
 
 Repeat these steps for each course. Each course has its own Sheet and its own
@@ -113,8 +191,8 @@ script deployment; the site just lists them all.
    contents of [`apps-script/Code.gs`](apps-script/Code.gs), and save.
 3. In the function dropdown pick `setup` and click **Run**. Authorize the script
    when prompted (it only accesses this spreadsheet). This creates the sheets
-   `Course`, `Settings`, `Assignments`, `Roster`, `Signups`, `Log`, and a sample
-   assignment tab `a1`.
+   `Course`, `Settings`, `Assignments`, `Roster`, `Signups`, `Sessions`,
+   `Attendance`, `Log`, and a sample assignment tab `a1`.
 4. Fill in **Course**: `COURSE_NAME`, `COURSE_CODE`, `YEAR`, `TERM`, `SECTION`,
    `PROFESSOR`. These appear at the top of the page.
 5. Fill in **Settings**:
@@ -129,6 +207,8 @@ script deployment; the site just lists them all.
      links are built from it, so find-your-name does not work until it is set.
    - `EMAIL_SENDER_NAME`, `EMAIL_REPLY_TO`, `EMAIL_SUBJECT`, `EMAIL_SIGNATURE`
      customise the link email. See "How the email is sent" below.
+   - `ATTENDANCE_WINDOW_MINUTES` is how long a check-in stays open unless you
+     say otherwise when starting it. Default `10`.
 
    If you set up the Sheet with an older version of the script, run
    `addMissingSettings()` from the Apps Script editor to append any new keys.
@@ -142,7 +222,7 @@ done, which most people will find easier. To do it in the Sheet instead:
 
    | column | meaning |
    |---|---|
-   | `id` | Short, URL-safe, unique (e.g. `presentations`). Also the name of the tab that holds this assignment's groups. Cannot be `Course`, `Settings`, `Assignments`, `Roster`, `Signups`, or `Log`. |
+   | `id` | Short, URL-safe, unique (e.g. `presentations`). Also the name of the tab that holds this assignment's groups. Cannot be `Course`, `Settings`, `Assignments`, `Roster`, `Signups`, `Sessions`, `Attendance`, or `Log`. |
    | `name` | Shown to students, e.g. "Seminar presentations". |
    | `due` | The assignment's due date, shown to students. A date cell or text like `2026-11-06`. Informational only. |
    | `signup_closes` | Optional. When signup for this assignment stops accepting changes, e.g. `2026-10-30T23:59`. Blank means no cutoff. |
@@ -247,7 +327,10 @@ script, so it is not the default.
   pass. **Freeze everything:** set `SIGNUP_OPEN` to `false`. Students can still
   view the groups.
 - **Audit trail:** the Log sheet records every register, join, switch, and
-  leave with a timestamp and assignment.
+  leave with a timestamp and assignment, and every check-in, wrong code,
+  session start and close.
+- **Take attendance:** Instructor panel ▸ Attendance ▸ Start check-in. See
+  [Attendance](#attendance).
 
 ## Storing the data: Google Drive or Dropbox?
 
@@ -308,23 +391,29 @@ can take a few seconds.
 
 ## Local preview
 
-With no courses in `config.js`, the page runs in demo mode with a sample
-course, three assignments, and sample students held in memory, so you can see
-the interface before wiring anything up. The demo admin key is `demo`, and
-`?t=demo-ada` signs you in as a sample student. Find-your-name works in the
-demo but no email is sent; the message tells you the token to use instead. To preview locally:
+With no courses in `config.js`, or with `?demo=1` in the address, the page runs
+in demo mode with a sample course, three assignments, sample students, and one
+past attendance session, kept in your browser's local storage so the signup
+page, the check-in page, and the instructor panel share it. The demo admin key
+is `demo`, and `t=demo-ada` (or `demo-grace`, `demo-alan`, `demo-kat`) signs
+you in as a sample student. Find-your-name works in the demo but no email is
+sent; the message tells you the token to use instead. To preview locally:
 
 ```bash
 python3 -m http.server 8765 --directory docs
 ```
 
-Then open <http://localhost:8765>.
+Then open <http://localhost:8765/?demo=1>. To try attendance, start a check-in
+from the instructor panel, then open
+<http://localhost:8765/attend.html?demo=1&t=demo-ada> and use the code shown.
 
 ## Files
 
 ```
-docs/index.html        the page
-docs/app.js            front-end logic, including the demo backend
+docs/index.html        the signup page
+docs/attend.html       the attendance check-in page students open from the QR code
+docs/display.html      the QR code, class code and countdown you project in class
+docs/app.js            front-end logic for both pages, including the demo backend
 docs/styles.css        styling (light and dark)
 docs/config.js         the one thing you edit: the list of courses and their script URLs
 apps-script/Code.gs    the backend; paste into each course's Apps Script project

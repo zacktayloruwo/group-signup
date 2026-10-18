@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attendance check-in</title>
+  <meta name="robots" content="noindex">
+  <style>
+    /* Deliberately plain and high-contrast: this page is projected in a classroom. */
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: #ffffff;
+      color: #111111;
+      font: 18px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .wrap { display: grid; gap: 24px; justify-items: center; text-align: center; max-width: 1100px; width: 100%; }
+    h1 { margin: 0; font-size: clamp(1.4rem, 3vw, 2.4rem); font-weight: 600; }
+    .course { color: #555; font-size: clamp(1rem, 2vw, 1.4rem); margin: 0; }
+    .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; width: 100%; }
+    @media (max-width: 760px) { .panels { grid-template-columns: 1fr; gap: 24px; } }
+    .qr { display: grid; justify-items: center; gap: 12px; }
+    .qr svg, .qr img { width: min(60vh, 90vw, 520px); height: auto; image-rendering: pixelated; }
+    .qr .fallback { font-size: 1rem; color: #555; overflow-wrap: anywhere; }
+    .steps { text-align: left; display: grid; gap: 20px; font-size: clamp(1.1rem, 2.2vw, 1.6rem); }
+    .steps b { display: block; font-size: 0.8em; color: #555; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: clamp(3rem, 9vw, 10rem);
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      line-height: 1;
+      margin: 0;
+      white-space: nowrap;
+    }
+    .url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+    .countdown { font-size: clamp(1rem, 2.2vw, 1.5rem); color: #555; }
+    .countdown.closed { color: #b3261e; font-weight: 600; }
+    .tools { position: fixed; top: 12px; right: 12px; display: flex; gap: 8px; opacity: 0.35; transition: opacity 0.2s; }
+    .tools:hover, .tools:focus-within { opacity: 1; }
+    .tools button { font: inherit; font-size: 0.9rem; padding: 6px 10px; border: 1px solid #bbb; border-radius: 8px; background: #fff; cursor: pointer; }
+    .warn { color: #b3261e; }
+  </style>
+</head>
+<body>
+  <div class="tools">
+    <button type="button" id="fullscreen">Full screen</button>
+  </div>
+  <div class="wrap">
+    <div>
+      <h1>Check in to today's class</h1>
+      <p class="course" id="course"></p>
+    </div>
+    <div class="panels">
+      <div class="qr">
+        <div id="qr" aria-label="QR code for the check-in page"></div>
+        <div class="fallback" id="qr-fallback" hidden></div>
+      </div>
+      <div class="steps">
+        <div><b>Scan the code</b> with your phone's camera and tap <em>I'm here</em>.</div>
+        <div><b>No camera?</b> Go to <span class="url" id="url"></span> and enter this code:</div>
+        <p class="code" id="code"></p>
+        <div class="countdown" id="countdown"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"
+          integrity="sha384-mZT2gIty7ZDdOGkxfP6joZcYdMW1Jvj9dRlfpTmaJAKKXTqzygtB22k7FLe+KZC1"
+          crossorigin="anonymous"></script>
+  <script>
+    (function () {
+      var p = new URLSearchParams(location.hash.slice(1));
+      var url = p.get('u') || '';
+      var code = p.get('k') || '';
+      var label = p.get('l') || '';
+      var course = p.get('t') || '';
+      var closes = p.get('e') ? new Date(p.get('e')) : null;
+      var typedUrl = p.get('s') || url.replace(/[?&]k=[^&]*/, '');
+
+      document.title = (course ? course + ' — ' : '') + 'Attendance';
+      document.getElementById('course').textContent = [course, label].filter(Boolean).join(' · ');
+      document.getElementById('code').textContent = code.split('').join(' ');
+      document.getElementById('url').textContent = typedUrl.replace(/^https?:\/\//, '');
+
+      var qrBox = document.getElementById('qr');
+      var fallback = document.getElementById('qr-fallback');
+      try {
+        if (!url) throw new Error('no url');
+        var qr = window.qrcode(0, 'M');
+        qr.addData(url);
+        qr.make();
+        qrBox.innerHTML = qr.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+      } catch (e) {
+        fallback.hidden = false;
+        fallback.textContent = url ? 'QR code unavailable. Students can go to ' + url : 'Open this page from the Attendance tab of the instructor panel.';
+      }
+
+      var cd = document.getElementById('countdown');
+      function tick() {
+        if (!closes || isNaN(closes.getTime())) { cd.textContent = ''; return; }
+        var left = Math.floor((closes.getTime() - Date.now()) / 1000);
+        if (left <= 0) { cd.textContent = 'Check-in is closed. Ask the instructor if you still need to check in.'; cd.className = 'countdown closed'; return; }
+        var m = Math.floor(left / 60), s = left % 60;
+        cd.textContent = 'Check-in closes in ' + m + ':' + (s < 10 ? '0' : '') + s;
+        cd.className = 'countdown';
+      }
+      tick();
+      setInterval(tick, 1000);
+
+      document.getElementById('fullscreen').addEventListener('click', function () {
+        var el = document.documentElement;
+        if (document.fullscreenElement) document.exitFullscreen();
+        else if (el.requestFullscreen) el.requestFullscreen();
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -10,8 +10,8 @@
 </head>
 <body>
   <div id="demo-banner" class="banner" hidden>
-    <strong>Demo mode.</strong> No course is configured, so this page is using sample data and nothing is saved.
-    Add a course to <code>config.js</code> to connect it.
+    <strong>Demo mode.</strong> This page is using sample data kept only in this browser.
+    Add a course to <code>config.js</code> to connect a real one.
   </div>
 
   <header class="page-header">
@@ -45,6 +45,7 @@
   </main>
 
   <footer class="page-footer">
+    <a id="attend-link" href="attend.html" hidden>Attendance check-in</a>
     <button type="button" id="admin-open" class="link-button" hidden>Instructor</button>
   </footer>
 
@@ -69,6 +70,7 @@
         <button type="button" data-tab="course">Course &amp; settings</button>
         <button type="button" data-tab="assignments">Assignments &amp; groups</button>
         <button type="button" data-tab="roster">Roster</button>
+        <button type="button" data-tab="attendance">Attendance</button>
         <button type="button" id="admin-forget" class="link-button">Forget key</button>
       </nav>
 
@@ -107,6 +109,24 @@
           <label class="checkbox"><input type="checkbox" id="admin-roster-remove"> Remove students not listed above</label>
           <button type="button" id="admin-save-roster" class="button primary">Save roster</button>
           <span id="admin-roster-count" class="hint"></span>
+        </div>
+      </section>
+
+      <section data-panel="attendance" hidden>
+        <div id="admin-session-live" class="session-live"></div>
+        <div class="admin-actions">
+          <label class="inline">Session
+            <select id="admin-session-select"></select>
+          </label>
+          <button type="button" id="admin-attendance-refresh" class="button">Refresh</button>
+          <button type="button" id="admin-attendance-download" class="button">Download CSV (all sessions)</button>
+        </div>
+        <p id="admin-attendance-summary" class="hint"></p>
+        <div class="table-wrap">
+          <table id="admin-attendance-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Note</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
         </div>
       </section>
     </div>

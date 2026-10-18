@@ -14,11 +14,14 @@
  *   <one tab per assignment, named by its id> — id | name | slots | description
  *   Roster       — email | name | token | created | invite_link
  *   Signups      — email | assignment | group_id | updated
+ *   Sessions     — id | label | code | opened | closes | closed_at      (attendance sessions)
+ *   Attendance   — session_id | email | checked_in | device | by       (one row per check-in)
  *   Log          — timestamp | email | assignment | action | group_id | detail
  *
  * Instructor-only functions (run from the Apps Script editor):
  *   setup()                create the sheets with headers and sample rows
  *   addMissingSettings()   add Settings rows introduced by newer versions of this script
+ *   addAttendanceSheets()  add the Sessions and Attendance sheets to a workbook set up before attendance existed
  *   addAssignmentSheets()  create a groups tab for every Assignments row that lacks one
  *   generateTokens()       fill in a token for every Roster row that lacks one
  *   writeInviteLinks()     fill the invite_link column from SITE_URL + token
@@ -33,6 +36,8 @@ var SHEETS = {
   ASSIGNMENTS: 'Assignments',
   ROSTER:      'Roster',
   SIGNUPS:     'Signups',
+  SESSIONS:    'Sessions',
+  ATTENDANCE:  'Attendance',
   LOG:         'Log'
 };
 
@@ -57,14 +62,18 @@ var DEFAULT_SETTINGS = {
   EMAIL_SENDER_NAME: '',          // display name on the From line; blank = PROFESSOR from the Course sheet
   EMAIL_REPLY_TO:  '',            // replies go here instead of the Gmail account that owns the script
   EMAIL_SUBJECT:   '',            // blank = "<code> <course name>: your group signup link"
-  EMAIL_SIGNATURE: ''             // closing lines of the email; blank = PROFESSOR and course. Line breaks are kept.
+  EMAIL_SIGNATURE: '',            // closing lines of the email; blank = PROFESSOR and course. Line breaks are kept.
+  ATTENDANCE_WINDOW_MINUTES: '10' // how long an attendance session stays open by default
 };
 
 var LINK_REQUESTS_PER_DAY = 5;    // per student, to stop the public page being used to spam an inbox
 var LINK_REQUEST_COOLDOWN_MS = 60 * 1000;
+var ATTENDANCE_MAX_WRONG_CODES = 5; // wrong class codes per student per session before they must see the instructor
 
 var ASSIGNMENT_HEADERS = ['id', 'name', 'due', 'signup_closes', 'open', 'instructions'];
 var GROUP_HEADERS = ['id', 'name', 'slots', 'description'];
+var SESSION_HEADERS = ['id', 'label', 'code', 'opened', 'closes', 'closed_at'];
+var ATTENDANCE_HEADERS = ['session_id', 'email', 'checked_in', 'device', 'by'];
 
 // ---------------------------------------------------------------------------
 // HTTP entry points
@@ -105,6 +114,13 @@ function handleRequest(req) {
       case 'join':     return withLock(function () { return actionJoin(req); });
       case 'leave':    return withLock(function () { return actionLeave(req); });
       case 'export':   return actionExport(req);
+      case 'attendState': return actionAttendState(req);
+      case 'attend':   return withLock(function () { return actionAttend(req); });
+      case 'adminAttendance':      return requireAdmin(req, actionAdminAttendance);
+      case 'adminStartSession':    return requireAdmin(req, function (r) { return withLock(function () { return actionAdminStartSession(r); }); });
+      case 'adminCloseSession':    return requireAdmin(req, function (r) { return withLock(function () { return actionAdminCloseSession(r); }); });
+      case 'adminExtendSession':   return requireAdmin(req, function (r) { return withLock(function () { return actionAdminExtendSession(r); }); });
+      case 'adminMarkAttendance':  return requireAdmin(req, function (r) { return withLock(function () { return actionAdminMarkAttendance(r); }); });
       case 'adminGet':             return requireAdmin(req, actionAdminGet);
       case 'adminSaveCourse':      return requireAdmin(req, function (r) { return withLock(function () { return actionAdminSaveCourse(r); }); });
       case 'adminSaveAssignments': return requireAdmin(req, function (r) { return withLock(function () { return actionAdminSaveAssignments(r); }); });
@@ -420,6 +436,252 @@ function writeTable(sheet, headers, rows) {
 }
 
 // ---------------------------------------------------------------------------
+// Attendance
+//
+// The instructor starts a session, which gets a random 4-digit class code and
+// closes after a set number of minutes. The slide shows a QR code whose URL
+// carries the class code. A student opens it on a phone that already holds
+// their personal token (the same token the signup page uses) and taps once.
+// The script records who, when, and a hash of the phone's random device id,
+// so two students checking in from the same phone can be flagged.
+// ---------------------------------------------------------------------------
+
+function loadAttendance() {
+  var sessions = readRowsWithPositions(SHEETS.SESSIONS).map(function (r, i) {
+    return {
+      row: i + 2,
+      id: String(r[0] || '').trim(),
+      label: String(r[1] || '').trim(),
+      code: String(r[2] || '').trim(),
+      opened: toDate(r[3]),
+      closes: toDate(r[4]),
+      closedAt: toDate(r[5])
+    };
+  }).filter(function (s) { return s.id; });
+  sessions.forEach(function (s) { s.open = isSessionOpen(s); });
+
+  var records = readRows(SHEETS.ATTENDANCE).map(function (r) {
+    return {
+      sessionId: String(r[0] || '').trim(),
+      email: normalizeEmail(r[1]),
+      time: toDate(r[2]),
+      device: String(r[3] || '').trim(),
+      by: String(r[4] || '').trim() || 'student'
+    };
+  }).filter(function (r) { return r.sessionId && r.email; });
+
+  return { sessions: sessions, records: records };
+}
+
+function isSessionOpen(s) {
+  return !s.closedAt && !!s.closes && new Date() < s.closes;
+}
+
+function openSession(att) {
+  var open = att.sessions.filter(function (s) { return s.open; });
+  return open.length ? open[open.length - 1] : null;
+}
+
+function findSession(att, id) {
+  id = String(id || '').trim();
+  return att.sessions.filter(function (s) { return s.id === id; })[0] || null;
+}
+
+function findRecord(att, sessionId, email) {
+  return att.records.filter(function (r) { return r.sessionId === sessionId && r.email === email; })[0] || null;
+}
+
+/** What the check-in page needs. The class code is never included. */
+function attendStateFor(db, me, att) {
+  var open = openSession(att);
+  var mine = me && open ? findRecord(att, open.id, me.email) : null;
+  var out = {
+    ok: true,
+    course: publicCourse(db),
+    settings: publicSettings(db),
+    me: me ? { email: me.email, name: me.name } : null,
+    session: open ? { id: open.id, label: open.label, opened: toIso(open.opened), closes: toIso(open.closes) } : null,
+    checkedIn: mine ? { label: open.label, time: toIso(mine.time) } : null,
+    history: []
+  };
+  if (me) {
+    out.history = att.sessions.filter(function (s) { return !s.open; }).map(function (s) {
+      return { label: s.label, date: toIso(s.opened), present: !!findRecord(att, s.id, me.email) };
+    });
+  }
+  return out;
+}
+
+function actionAttendState(req) {
+  var db = loadDb();
+  var me = req.token ? findByToken(db, req.token) : null;
+  return attendStateFor(db, me, loadAttendance());
+}
+
+function actionAttend(req) {
+  var db = loadDb();
+  var me = findByToken(db, req.token);
+  if (!me) return { ok: false, error: 'Your link is not recognised. Ask the instructor for a new one.' };
+
+  var att = loadAttendance();
+  var open = openSession(att);
+  if (!open) return { ok: false, error: 'No attendance session is open right now. Wait for the instructor to start one, then try again.' };
+
+  if (findRecord(att, open.id, me.email)) return attendStateFor(db, me, att);
+
+  var wrong = countWrongCodes(me.email, open.id);
+  if (wrong >= ATTENDANCE_MAX_WRONG_CODES) {
+    return { ok: false, error: 'Too many wrong codes. Please see the instructor to be marked present.' };
+  }
+  var code = String(req.code || '').replace(/\D/g, '');
+  if (code !== open.code) {
+    appendLog(me.email, '', 'attend-wrong', '', open.id);
+    var left = ATTENDANCE_MAX_WRONG_CODES - wrong - 1;
+    return { ok: false, error: left > 0
+      ? 'That code is not right. Check the slide and try again (' + left + ' ' + (left === 1 ? 'try' : 'tries') + ' left).'
+      : 'That code is not right, and you have run out of tries. Please see the instructor.' };
+  }
+
+  var device = String(req.device || '').trim();
+  getSheet(SHEETS.ATTENDANCE).appendRow([open.id, me.email, new Date(), device ? shortHash(device) : '', 'student']);
+  appendLog(me.email, '', 'attend', '', open.id);
+  return attendStateFor(db, me, loadAttendance());
+}
+
+function countWrongCodes(email, sessionId) {
+  return readRows(SHEETS.LOG).filter(function (r) {
+    return normalizeEmail(r[1]) === email && String(r[3]) === 'attend-wrong' && String(r[5] || '').trim() === sessionId;
+  }).length;
+}
+
+/** Everything the instructor's Attendance tab shows: sessions, check-ins with same-phone flags, and the roster. */
+function actionAdminAttendance(req) {
+  return adminAttendanceView(loadDb(), loadAttendance());
+}
+
+function adminAttendanceView(db, att, extra) {
+  var nameByEmail = {};
+  db.roster.forEach(function (r) { nameByEmail[r.email] = r.name; });
+
+  // Same device id used by more than one student in one session.
+  var byDevice = {};
+  att.records.forEach(function (r) {
+    if (!r.device) return;
+    var key = r.sessionId + '|' + r.device;
+    (byDevice[key] = byDevice[key] || []).push(r.email);
+  });
+
+  var records = att.records.map(function (r) {
+    var others = r.device ? byDevice[r.sessionId + '|' + r.device].filter(function (e) { return e !== r.email; }) : [];
+    return {
+      sessionId: r.sessionId,
+      email: r.email,
+      name: nameByEmail[r.email] || '',
+      time: toIso(r.time),
+      by: r.by,
+      flag: others.length ? 'Same phone as ' + others.map(function (e) { return nameByEmail[e] || e; }).join(', ') : ''
+    };
+  });
+
+  var sessions = att.sessions.map(function (s) {
+    var mine = records.filter(function (r) { return r.sessionId === s.id; });
+    return {
+      id: s.id, label: s.label, code: s.code, open: s.open,
+      opened: toIso(s.opened), closes: toIso(s.closes), closedAt: toIso(s.closedAt),
+      present: mine.length,
+      flagged: mine.filter(function (r) { return r.flag; }).length
+    };
+  }).reverse();
+
+  var out = {
+    ok: true,
+    sessions: sessions,
+    records: records,
+    roster: db.roster.map(function (r) { return { email: r.email, name: r.name }; }),
+    windowMinutes: parseInt(db.settings.ATTENDANCE_WINDOW_MINUTES, 10) || 10
+  };
+  Object.keys(extra || {}).forEach(function (k) { out[k] = extra[k]; });
+  return out;
+}
+
+/** Start a session: any session still open is closed first, so one class code is live at a time. */
+function actionAdminStartSession(req) {
+  var db = loadDb();
+  var att = loadAttendance();
+  var sheet = getSheet(SHEETS.SESSIONS);
+  var now = new Date();
+  att.sessions.forEach(function (s) { if (s.open) sheet.getRange(s.row, 6).setValue(now); });
+
+  var minutes = sessionMinutes(req.minutes, db.settings);
+  var tz = Session.getScriptTimeZone();
+  var base = Utilities.formatDate(now, tz, 'yyyy-MM-dd-HHmm');
+  var id = base, n = 2;
+  while (findSession(att, id)) id = base + '-' + (n++);
+  var label = String(req.label || '').trim() || Utilities.formatDate(now, tz, 'EEE MMM d, h:mm a');
+  var code = String(1000 + Math.floor(Math.random() * 9000));
+  sheet.appendRow([id, label, code, now, new Date(now.getTime() + minutes * 60000), '']);
+  appendLog('', '', 'admin-session-start', '', id + ' (' + minutes + ' min)');
+  return adminAttendanceView(db, loadAttendance(), { started: id });
+}
+
+function actionAdminCloseSession(req) {
+  var att = loadAttendance();
+  var s = findSession(att, req.sessionId);
+  if (!s) return { ok: false, error: 'That session does not exist.' };
+  if (!s.closedAt) getSheet(SHEETS.SESSIONS).getRange(s.row, 6).setValue(new Date());
+  appendLog('', '', 'admin-session-close', '', s.id);
+  return adminAttendanceView(loadDb(), loadAttendance());
+}
+
+/** Keep an open session open for longer, or reopen a closed one for a few more minutes. */
+function actionAdminExtendSession(req) {
+  var db = loadDb();
+  var att = loadAttendance();
+  var s = findSession(att, req.sessionId);
+  if (!s) return { ok: false, error: 'That session does not exist.' };
+  var minutes = sessionMinutes(req.minutes, db.settings);
+  var now = new Date();
+  var from = s.open && s.closes > now ? s.closes : now;
+  var sheet = getSheet(SHEETS.SESSIONS);
+  sheet.getRange(s.row, 5).setValue(new Date(from.getTime() + minutes * 60000));
+  sheet.getRange(s.row, 6).setValue('');
+  appendLog('', '', 'admin-session-extend', '', s.id + ' (+' + minutes + ' min)');
+  return adminAttendanceView(db, loadAttendance());
+}
+
+/** Mark a student present (for example, their phone died) or remove their check-in. */
+function actionAdminMarkAttendance(req) {
+  var db = loadDb();
+  var att = loadAttendance();
+  var s = findSession(att, req.sessionId);
+  if (!s) return { ok: false, error: 'That session does not exist.' };
+  var email = normalizeEmail(req.email);
+  if (!db.roster.some(function (r) { return r.email === email; })) return { ok: false, error: 'That student is not on the roster.' };
+
+  var sheet = getSheet(SHEETS.ATTENDANCE);
+  if (req.present) {
+    if (!findRecord(att, s.id, email)) {
+      sheet.appendRow([s.id, email, new Date(), '', 'instructor']);
+      appendLog(email, '', 'attend-marked', '', s.id);
+    }
+  } else {
+    var values = sheet.getDataRange().getValues();
+    for (var i = values.length - 1; i >= 1; i--) {
+      if (String(values[i][0] || '').trim() === s.id && normalizeEmail(values[i][1]) === email) sheet.deleteRow(i + 1);
+    }
+    appendLog(email, '', 'attend-removed', '', s.id);
+  }
+  return adminAttendanceView(db, loadAttendance());
+}
+
+function sessionMinutes(value, settings) {
+  var minutes = parseInt(value, 10);
+  if (isNaN(minutes)) minutes = parseInt(settings.ATTENDANCE_WINDOW_MINUTES, 10);
+  if (isNaN(minutes) || minutes < 1) minutes = 10;
+  return Math.min(minutes, 600);
+}
+
+// ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
 
@@ -683,9 +945,18 @@ function setup() {
   ensureSheet(ss, SHEETS.ROSTER, ['email', 'name', 'token', 'created', 'invite_link'], []);
   ensureSheet(ss, SHEETS.SIGNUPS, ['email', 'assignment', 'group_id', 'updated'], []);
   ensureSheet(ss, SHEETS.LOG, ['timestamp', 'email', 'assignment', 'action', 'group_id', 'detail'], []);
+  addAttendanceSheets();
   addAssignmentSheets();
   var first = ss.getSheets()[0];
   if (first.getName() === 'Sheet1' && first.getLastRow() === 0) ss.deleteSheet(first);
+}
+
+/** Add the Sessions and Attendance sheets (and the attendance setting) to an existing workbook. Safe to re-run. */
+function addAttendanceSheets() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureSheet(ss, SHEETS.SESSIONS, SESSION_HEADERS, []);
+  ensureSheet(ss, SHEETS.ATTENDANCE, ATTENDANCE_HEADERS, []);
+  if (ss.getSheetByName(SHEETS.SETTINGS)) addMissingSettings();
 }
 
 /** For every row in Assignments, create the groups tab (named by the id) if it does not exist yet. */
@@ -853,13 +1124,27 @@ function toIso(v) {
   return String(v == null ? '' : v).trim();
 }
 
+/** A Date from a Sheet cell (a Date, or text that parses as one), else null. */
+function toDate(v) {
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  var s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  var d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 function newToken() {
   return Utilities.getUuid().replace(/-/g, '');
 }
 
 /** Opaque, stable id for a roster entry (first 12 hex chars of SHA-256 of the email). */
 function rosterId(email) {
-  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, email, Utilities.Charset.UTF_8);
+  return shortHash(email);
+}
+
+/** First 12 hex chars of SHA-256, so the Sheet never holds the raw value. */
+function shortHash(text) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, text, Utilities.Charset.UTF_8);
   return bytes.slice(0, 6).map(function (b) {
     var h = (b < 0 ? b + 256 : b).toString(16);
     return h.length < 2 ? '0' + h : h;
