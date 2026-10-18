@@ -137,13 +137,17 @@ who marked each row.
 session (1 = present), plus a total, ready for your gradebook. The Sessions and
 Attendance sheets hold the same data in long form.
 
-To keep taps fast when a whole class checks in at once, the script keeps the
-Course, Settings, Roster, Sessions and Attendance sheets in a short-lived cache
-(about 25 seconds) instead of reading the Sheet on every request. Anything you
-do from the instructor panel clears the cache at once, and a student always
-sees their own check-in immediately, but a change made by editing the Sheet by
-hand can take up to half a minute to reach students (or run
-`invalidateSheetCache()` in the Apps Script editor).
+To keep taps fast when a whole class checks in at once, the script keeps every
+sheet the pages read in a cache for up to five minutes instead of reading the
+Sheet on every request. Anything that goes through the script, from the
+instructor panel or from a student joining a group, clears the cache at once,
+and a student always sees their own check-in immediately. A change made by
+editing the Sheet by hand can take up to five minutes to reach students, or
+run `invalidateSheetCache()` in the Apps Script editor to make it immediate.
+
+The pages also remember what they last showed on that device and paint it at
+once, then refresh in the background, so a returning student sees their name
+and the button without waiting for the script.
 
 ### What stops a friend from checking in for someone
 

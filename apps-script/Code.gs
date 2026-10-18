@@ -25,7 +25,7 @@
  *   addAssignmentSheets()  create a groups tab for every Assignments row that lacks one
  *   generateTokens()       fill in a token for every Roster row that lacks one
  *   invalidateSheetCache() forget cached sheet values after editing the Sheet by hand (they expire on their own
- *                          within half a minute; see "Sheet cache" below)
+ *                          within five minutes; see "Sheet cache" below)
  *   writeInviteLinks()     fill the invite_link column from SITE_URL + token
  *   sendInvites()          email each student their personal link (optional; students can
  *                          also request their own link from the site when SELF_SERVICE_LINKS is true)
@@ -33,7 +33,7 @@
  */
 
 // Bump when deploying, so the live version can be checked with <web app URL> (no action) or ?action=version.
-var SCRIPT_VERSION = '2026-10-18.4 sheet cache';
+var SCRIPT_VERSION = '2026-10-18.5 full cache';
 
 var SHEETS = {
   COURSE:      'Course',
@@ -377,6 +377,7 @@ function actionAdminSaveAssignments(req) {
     var sheet = ss.getSheetByName(t.id) || ensureSheet(ss, t.id, GROUP_HEADERS, []);
     writeTable(sheet, GROUP_HEADERS, t.rows);
   });
+  invalidateSheetCache();
   appendLog('', '', 'admin-assignments', '', rows.length + ' assignment(s)');
   return actionAdminGet(req);
 }
@@ -735,11 +736,11 @@ function sessionMinutes(value, settings) {
 // ---------------------------------------------------------------------------
 // Sheet cache
 //
-// Reading a sheet costs the better part of a second, and every attendance tap
-// read five of them, so a class checking in within a minute meant hundreds of
-// reads. The raw cell grids of the sheets that change rarely (Course, Settings,
-// Roster, Sessions, Attendance) are kept in the script cache for
-// SHEET_CACHE_SECONDS. Every action that writes one of them calls
+// Reading a sheet costs the better part of a second, and every request read
+// several of them, so a class checking in within a minute meant hundreds of
+// reads. The raw cell grids of every sheet the pages read (Course, Settings,
+// Roster, Sessions, Attendance, Assignments, the group tabs, Signups) are kept
+// in the script cache for SHEET_CACHE_SECONDS. Every action that writes one of them calls
 // invalidateSheetCache(), which bumps a generation stamp; a cached grid carries
 // the stamp it was read under and is ignored once the stamp changes, so even a
 // read that was in flight during a write cannot put stale values back. A grid
@@ -749,11 +750,13 @@ function sessionMinutes(value, settings) {
 // shows even while the cached Attendance grid predates it.
 // ---------------------------------------------------------------------------
 
-var SHEET_CACHE_SECONDS = 25;
+// Writes through the script invalidate the cache at once, so the lifetime only bounds how long a
+// hand edit in the Sheet takes to reach students (or run invalidateSheetCache() from the editor).
+var SHEET_CACHE_SECONDS = 5 * 60;
 var SHEET_CACHE_GENERATION_KEY = 'sheet-generation';
 var SHEET_CACHE_CHUNK_BYTES = 80 * 1024; // comfortably under the 100 KB per-value limit
 var SHEET_CACHE_MAX_CHUNKS = 8;          // about 640 KB; a bigger sheet is not cached
-var CHECK_IN_MEMORY_SECONDS = 120;       // must outlast SHEET_CACHE_SECONDS
+var CHECK_IN_MEMORY_SECONDS = SHEET_CACHE_SECONDS + 60; // must outlast the cached Attendance grid
 var ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 function sheetCacheKey(name) { return 'sheet|' + name; }
@@ -768,10 +771,11 @@ function invalidateSheetCache() {
 /**
  * The cell grids (header row included) of the named sheets, as getDataRange().getValues() returns
  * them, from the cache where it can. With fresh=true every sheet is read from the Sheet (and the
- * cache refilled). extraKeys are other cache entries fetched in the same round trip.
- * Returns { sheets: { name: grid }, extra: { key: value } }.
+ * cache refilled). extraKeys are other cache entries fetched in the same round trip. With
+ * optional=true a sheet that does not exist yields an empty grid instead of an error (group tabs
+ * that have not been created yet). Returns { sheets: { name: grid }, extra: { key: value } }.
  */
-function sheetValues(names, fresh, extraKeys) {
+function sheetValues(names, fresh, extraKeys, optional) {
   var cache = CacheService.getScriptCache();
   extraKeys = extraKeys || [];
   var keys = [SHEET_CACHE_GENERATION_KEY].concat(extraKeys);
@@ -810,7 +814,8 @@ function sheetValues(names, fresh, extraKeys) {
   var toPut = {};
   names.forEach(function (name) {
     if (sheets[name]) return;
-    sheets[name] = getSheet(name).getDataRange().getValues();
+    var sheet = optional ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name) : getSheet(name);
+    sheets[name] = sheet ? sheet.getDataRange().getValues() : [];
     stageGrid(toPut, gen, name, sheets[name]);
   });
   if (Object.keys(toPut).length) {
@@ -867,12 +872,12 @@ function loadCore(fresh) {
   return { course: course, settings: settings, roster: roster, assignments: [], signups: [] };
 }
 
-/** Everything the signup page needs. Course, Settings and Roster may come from the cache unless fresh=true. */
+/** Everything the signup page needs. Every sheet may come from the cache unless fresh=true. */
 function loadDb(fresh) {
   var db = loadCore(fresh);
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var v = sheetValues([SHEETS.ASSIGNMENTS, SHEETS.SIGNUPS], fresh).sheets;
 
-  var assignments = readRows(SHEETS.ASSIGNMENTS).map(function (r) {
+  var assignments = rowsFrom(v[SHEETS.ASSIGNMENTS]).map(function (r) {
     var id = String(r[0] || '').trim();
     var openCell = String(r[4] == null ? '' : r[4]).trim();
     return {
@@ -888,10 +893,12 @@ function loadDb(fresh) {
     return a.id && RESERVED_SHEET_NAMES.indexOf(a.id) < 0;
   });
 
+  // One group tab per assignment; a tab not created yet reads as an empty grid.
+  var tabs = assignments.length
+    ? sheetValues(assignments.map(function (a) { return a.id; }), fresh, [], true).sheets
+    : {};
   assignments.forEach(function (a) {
-    var sheet = ss.getSheetByName(a.id);
-    if (!sheet) return; // tab not created yet; assignment shows with no groups
-    a.groups = sheet.getDataRange().getValues().slice(1).map(function (r) {
+    a.groups = (tabs[a.id] || []).slice(1).map(function (r) {
       return {
         id: String(r[0] || '').trim(),
         name: String(r[1] || '').trim(),
@@ -902,7 +909,7 @@ function loadDb(fresh) {
   });
 
   db.assignments = assignments;
-  db.signups = readRows(SHEETS.SIGNUPS).map(function (r) {
+  db.signups = rowsFrom(v[SHEETS.SIGNUPS]).map(function (r) {
     return {
       email: normalizeEmail(r[0]),
       assignment: String(r[1] || '').trim(),
@@ -966,10 +973,12 @@ function upsertSignup(email, assignmentId, groupId) {
   for (var i = 1; i < values.length; i++) {
     if (normalizeEmail(values[i][0]) === email && String(values[i][1] || '').trim() === assignmentId) {
       sheet.getRange(i + 1, 1, 1, 4).setValues([[email, assignmentId, groupId, new Date()]]);
+      invalidateSheetCache();
       return;
     }
   }
   sheet.appendRow([email, assignmentId, groupId, new Date()]);
+  invalidateSheetCache();
 }
 
 function deleteSignup(email, assignmentId) {
@@ -978,6 +987,7 @@ function deleteSignup(email, assignmentId) {
   for (var i = values.length - 1; i >= 1; i--) {
     if (normalizeEmail(values[i][0]) === email && String(values[i][1] || '').trim() === assignmentId) sheet.deleteRow(i + 1);
   }
+  invalidateSheetCache();
 }
 
 function appendLog(email, assignmentId, action, groupId, detail) {
@@ -1150,6 +1160,7 @@ function addAssignmentSheets() {
       ['C', 'Group C', 4, '']
     ]);
   });
+  invalidateSheetCache();
 }
 
 function ensureSheet(ss, name, headers, sampleRows) {

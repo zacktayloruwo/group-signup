@@ -11,7 +11,8 @@
   var ATTEND = document.body.getAttribute('data-page') === 'attend';
 
   var $ = function (sel) { return document.querySelector(sel); };
-  var state = { course: null, settings: null, assignments: [], me: null, roster: null, session: null, checkedIn: null, history: [] };
+  var state = { course: null, settings: null, assignments: [], me: null, roster: null, session: null, checkedIn: null, history: [],
+    stale: false };  // true while showing what this device saw last time, before the script has answered
   var courseKey = '';
   var apiUrl = '';
   var token = '';
@@ -37,6 +38,20 @@
   function storageDel(store, key) { try { store.removeItem(key); } catch (e) { /* ignore */ } }
   function tokenKey() { return 'groupSignup.token.' + courseKey; }
   function adminKeyKey() { return 'groupSignup.adminKey.' + courseKey; }
+
+  /**
+   * The last response this device got for this page, course and student, so the page can paint
+   * at once and refresh in the background. The script takes a second or more to answer.
+   */
+  function lastStateKey() { return 'groupSignup.last.' + (ATTEND ? 'attend' : 'signup') + '.' + courseKey + '.' + token; }
+  function readLastState() {
+    try { return JSON.parse(storageGet(localStorage, lastStateKey()) || 'null'); } catch (e) { return null; }
+  }
+  function writeLastState(data) {
+    var copy = {};
+    Object.keys(data).forEach(function (k) { if (k !== 'token') copy[k] = data[k]; });
+    storageSet(localStorage, lastStateKey(), JSON.stringify(copy));
+  }
 
   /** A random id that stays with this browser, so two students checking in from one phone can be flagged. */
   function deviceId() {
@@ -74,6 +89,7 @@
     if ('session' in data) state.session = data.session;
     if ('checkedIn' in data) state.checkedIn = data.checkedIn;
     if (data.history) state.history = data.history;
+    if (!state.stale && data.course) writeLastState(data);
     ensureAssignment();
     render();
   }
@@ -287,7 +303,17 @@
     box.appendChild(h);
 
     var session = state.session;
-    if (state.checkedIn) {
+    if (state.stale) {
+      // Whether a check-in is open is the one thing that must come from the script, not from last time.
+      var checking = document.createElement('p');
+      checking.className = 'hint';
+      var sp = document.createElement('span');
+      sp.className = 'spinner';
+      sp.setAttribute('aria-hidden', 'true');
+      checking.appendChild(sp);
+      checking.appendChild(document.createTextNode(' Checking for an open check-in…'));
+      box.appendChild(checking);
+    } else if (state.checkedIn) {
       var done = document.createElement('div');
       done.className = 'checked-in';
       var strong = document.createElement('strong');
@@ -689,9 +715,12 @@
   /** Page-level wait: dims the main section and shows the "Loading…" line. */
   function setBusy(busy) {
     var el = $('#groups') || $('#attend');
-    if (el) el.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (el) el.setAttribute('aria-busy', busy && !state.stale ? 'true' : 'false');
     var loading = $('#loading');
-    if (loading) loading.hidden = !busy;
+    if (loading) {
+      loading.hidden = !busy;
+      loading.lastChild.textContent = state.stale ? ' Updating…' : ' Loading…';
+    }
   }
 
   /**
@@ -731,11 +760,17 @@
   }
 
   function load() {
+    var last = !state.course && readLastState();
+    if (last) {
+      // Paint what this device saw last time right away; the live answer replaces it below.
+      state.stale = true;
+      applyResponse(last);
+    }
     setBusy(true);
     api({ action: ATTEND ? 'attendState' : 'state', token: token })
-      .then(applyResponse)
+      .then(function (data) { state.stale = false; applyResponse(data); })
       .catch(function (err) {
-        $('#course-meta').textContent = ATTEND ? 'Could not load the attendance page.' : 'Could not load the signup data.';
+        if (!state.stale) $('#course-meta').textContent = ATTEND ? 'Could not load the attendance page.' : 'Could not load the signup data.';
         notify(err.message, 'error');
         setBusy(false);
       });
