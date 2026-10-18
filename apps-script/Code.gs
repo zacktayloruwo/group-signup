@@ -24,6 +24,8 @@
  *   addAttendanceSheets()  add the Sessions and Attendance sheets to a workbook set up before attendance existed
  *   addAssignmentSheets()  create a groups tab for every Assignments row that lacks one
  *   generateTokens()       fill in a token for every Roster row that lacks one
+ *   invalidateSheetCache() forget cached sheet values after editing the Sheet by hand (they expire on their own
+ *                          within half a minute; see "Sheet cache" below)
  *   writeInviteLinks()     fill the invite_link column from SITE_URL + token
  *   sendInvites()          email each student their personal link (optional; students can
  *                          also request their own link from the site when SELF_SERVICE_LINKS is true)
@@ -155,7 +157,7 @@ function actionState(req) {
 }
 
 function actionRegister(req) {
-  var db = loadDb();
+  var db = loadDb(true);
   if (!isTrue(db.settings.OPEN_ENROLLMENT)) {
     return { ok: false, error: 'Self-registration is off. Use the personal link your instructor sent you.' };
   }
@@ -171,9 +173,10 @@ function actionRegister(req) {
 
   var token = newToken();
   getSheet(SHEETS.ROSTER).appendRow([email, name, token, new Date(), '']);
+  invalidateSheetCache();
   appendLog(email, '', 'register', '', name);
 
-  db = loadDb();
+  db = loadDb(true);
   var out = publicState(db, findByToken(db, token));
   out.token = token;
   return out;
@@ -190,7 +193,7 @@ function actionRoster(req) {
 
 /** Email a student their personal link, to the address the instructor has on file. */
 function actionSendLink(req) {
-  var db = loadDb();
+  var db = loadDb(true);
   if (!isTrue(db.settings.SELF_SERVICE_LINKS)) return { ok: false, error: 'Self-service links are turned off for this course.' };
   if (!String(db.settings.SITE_URL || '').trim()) return { ok: false, error: 'The instructor has not set SITE_URL yet, so links cannot be emailed.' };
 
@@ -207,6 +210,7 @@ function actionSendLink(req) {
   if (!entry.token) {
     entry.token = newToken();
     getSheet(SHEETS.ROSTER).getRange(entry.row, 3).setValue(entry.token);
+    invalidateSheetCache();
   }
   sendLinkEmail(db, entry);
   appendLog(entry.email, '', 'sendlink', '', '');
@@ -215,7 +219,7 @@ function actionSendLink(req) {
 
 /** A signed-in student replaces their token (old links stop working) and gets the new link by email. */
 function actionResetToken(req) {
-  var db = loadDb();
+  var db = loadDb(true);
   var me = findByToken(db, req.token);
   if (!me) return { ok: false, error: 'Your link is not recognised. Ask the instructor for a new one.' };
   if (!String(db.settings.SITE_URL || '').trim()) return { ok: false, error: 'The instructor has not set SITE_URL yet, so links cannot be emailed.' };
@@ -225,6 +229,7 @@ function actionResetToken(req) {
 
   me.token = newToken();
   getSheet(SHEETS.ROSTER).getRange(me.row, 3).setValue(me.token);
+  invalidateSheetCache();
   sendLinkEmail(db, me);
   appendLog(me.email, '', 'reset', '', '');
   return { ok: true, sentTo: maskEmail(me.email) };
@@ -297,7 +302,7 @@ function actionExport(req) {
 // ---------------------------------------------------------------------------
 
 function requireAdmin(req, fn) {
-  var settings = readKeyValues(SHEETS.SETTINGS, DEFAULT_SETTINGS);
+  var settings = keyValuesFrom(sheetValues([SHEETS.SETTINGS]).sheets[SHEETS.SETTINGS], DEFAULT_SETTINGS);
   var adminKey = String(settings.ADMIN_KEY || '');
   if (!adminKey) return { ok: false, error: 'ADMIN_KEY is not set in the Settings sheet.' };
   if (String(req.adminKey || '') !== adminKey) return { ok: false, error: 'Wrong admin key.' };
@@ -327,6 +332,7 @@ function actionAdminSaveCourse(req) {
   var allowed = {};
   Object.keys(DEFAULT_SETTINGS).forEach(function (k) { if (k !== 'ADMIN_KEY' && k in settings) allowed[k] = settings[k]; });
   writeKeyValues(SHEETS.SETTINGS, DEFAULT_SETTINGS, allowed);
+  invalidateSheetCache();
   appendLog('', '', 'admin-course', '', Object.keys(course).concat(Object.keys(allowed)).join(','));
   return actionAdminGet(req);
 }
@@ -404,6 +410,7 @@ function actionAdminSaveRoster(req) {
     if (!present[e]) { kept.push([e, wanted[e], '', new Date(), '']); added++; }
   });
   writeTable(sheet, ['email', 'name', 'token', 'created', 'invite_link'], kept);
+  invalidateSheetCache();
   appendLog('', '', 'admin-roster', '', kept.length + ' on roster, ' + added + ' added');
   return actionAdminGet(req);
 }
@@ -448,8 +455,14 @@ function writeTable(sheet, headers, rows) {
 // so two students checking in from the same phone can be flagged.
 // ---------------------------------------------------------------------------
 
-function loadAttendance() {
-  var sessions = readRowsWithPositions(SHEETS.SESSIONS).map(function (r, i) {
+/**
+ * Sessions and check-ins. Pass the student's token so a check-in they made in the last couple of minutes
+ * is included even if the cached Attendance grid predates it; pass fresh=true (admin actions) to read
+ * the Sheet itself.
+ */
+function loadAttendance(token, fresh) {
+  var v = sheetValues([SHEETS.SESSIONS, SHEETS.ATTENDANCE], fresh, token ? [checkInKey(token)] : []);
+  var sessions = v.sheets[SHEETS.SESSIONS].slice(1).map(function (r, i) {
     return {
       row: i + 2,
       id: String(r[0] || '').trim(),
@@ -463,7 +476,7 @@ function loadAttendance() {
   sessions.forEach(function (s) { s.open = isSessionOpen(s); });
 
   var seen = {};
-  var records = readRows(SHEETS.ATTENDANCE).map(function (r) {
+  var records = rowsFrom(v.sheets[SHEETS.ATTENDANCE]).map(function (r) {
     return {
       sessionId: String(r[0] || '').trim(),
       email: normalizeEmail(r[1]),
@@ -478,6 +491,11 @@ function loadAttendance() {
     seen[key] = true;
     return true;
   });
+
+  var mine = token && v.extra[checkInKey(token)] ? JSON.parse(v.extra[checkInKey(token)]) : null;
+  if (mine && !seen[mine.sessionId + '|' + mine.email]) {
+    records.push({ sessionId: mine.sessionId, email: mine.email, time: toDate(mine.time), device: '', by: mine.by });
+  }
 
   return { sessions: sessions, records: records };
 }
@@ -524,7 +542,7 @@ function attendStateFor(db, me, att) {
 function actionAttendState(req) {
   var db = loadCore();
   var me = req.token ? findByToken(db, req.token) : null;
-  return attendStateFor(db, me, loadAttendance());
+  return attendStateFor(db, me, loadAttendance(me ? req.token : null));
 }
 
 function actionAttend(req) {
@@ -532,7 +550,7 @@ function actionAttend(req) {
   var me = findByToken(db, req.token);
   if (!me) return { ok: false, error: 'Your link is not recognised. Ask the instructor for a new one.' };
 
-  var att = loadAttendance();
+  var att = loadAttendance(req.token);
   var open = openSession(att);
   if (!open) return { ok: false, error: 'No attendance session is open right now. Wait for the instructor to start one, then try again.' };
 
@@ -555,6 +573,7 @@ function actionAttend(req) {
   var device = String(req.device || '').trim();
   var now = new Date();
   getSheet(SHEETS.ATTENDANCE).appendRow([open.id, me.email, now, device ? shortHash(device) : '', 'student']);
+  rememberCheckIn(req.token, open.id, me.email, now, 'student');
   appendLog(me.email, '', 'attend', '', open.id);
   att.records.push({ sessionId: open.id, email: me.email, time: now, device: device, by: 'student' });
   return attendStateFor(db, me, att);
@@ -576,7 +595,7 @@ function recordWrongCode(email, sessionId, count) {
 
 /** Everything the instructor's Attendance tab shows: sessions, check-ins with same-phone flags, and the roster. */
 function actionAdminAttendance(req) {
-  return adminAttendanceView(loadCore(), loadAttendance());
+  return adminAttendanceView(loadCore(), loadAttendance(null, true));
 }
 
 function adminAttendanceView(db, att, extra) {
@@ -627,7 +646,7 @@ function adminAttendanceView(db, att, extra) {
 /** Start a session: any session still open is closed first, so one class code is live at a time. */
 function actionAdminStartSession(req) {
   var db = loadCore();
-  var att = loadAttendance();
+  var att = loadAttendance(null, true);
   var sheet = getSheet(SHEETS.SESSIONS);
   var now = new Date();
   att.sessions.forEach(function (s) { if (s.open) sheet.getRange(s.row, 6).setValue(now); });
@@ -640,23 +659,25 @@ function actionAdminStartSession(req) {
   var label = String(req.label || '').trim() || Utilities.formatDate(now, tz, 'EEE MMM d, h:mm a');
   var code = String(1000 + Math.floor(Math.random() * 9000));
   sheet.appendRow([id, label, code, now, new Date(now.getTime() + minutes * 60000), '']);
+  invalidateSheetCache();
   appendLog('', '', 'admin-session-start', '', id + ' (' + minutes + ' min)');
-  return adminAttendanceView(db, loadAttendance(), { started: id });
+  return adminAttendanceView(db, loadAttendance(null, true), { started: id });
 }
 
 function actionAdminCloseSession(req) {
-  var att = loadAttendance();
+  var att = loadAttendance(null, true);
   var s = findSession(att, req.sessionId);
   if (!s) return { ok: false, error: 'That session does not exist.' };
   if (!s.closedAt) getSheet(SHEETS.SESSIONS).getRange(s.row, 6).setValue(new Date());
+  invalidateSheetCache();
   appendLog('', '', 'admin-session-close', '', s.id);
-  return adminAttendanceView(loadCore(), loadAttendance());
+  return adminAttendanceView(loadCore(), loadAttendance(null, true));
 }
 
 /** Keep an open session open for longer, or reopen a closed one for a few more minutes. */
 function actionAdminExtendSession(req) {
   var db = loadCore();
-  var att = loadAttendance();
+  var att = loadAttendance(null, true);
   var s = findSession(att, req.sessionId);
   if (!s) return { ok: false, error: 'That session does not exist.' };
   var minutes = sessionMinutes(req.minutes, db.settings);
@@ -665,23 +686,27 @@ function actionAdminExtendSession(req) {
   var sheet = getSheet(SHEETS.SESSIONS);
   sheet.getRange(s.row, 5).setValue(new Date(from.getTime() + minutes * 60000));
   sheet.getRange(s.row, 6).setValue('');
+  invalidateSheetCache();
   appendLog('', '', 'admin-session-extend', '', s.id + ' (+' + minutes + ' min)');
-  return adminAttendanceView(db, loadAttendance());
+  return adminAttendanceView(db, loadAttendance(null, true));
 }
 
 /** Mark a student present (for example, their phone died) or remove their check-in. */
 function actionAdminMarkAttendance(req) {
   var db = loadCore();
-  var att = loadAttendance();
+  var att = loadAttendance(null, true);
   var s = findSession(att, req.sessionId);
   if (!s) return { ok: false, error: 'That session does not exist.' };
   var email = normalizeEmail(req.email);
-  if (!db.roster.some(function (r) { return r.email === email; })) return { ok: false, error: 'That student is not on the roster.' };
+  var student = db.roster.filter(function (r) { return r.email === email; })[0];
+  if (!student) return { ok: false, error: 'That student is not on the roster.' };
 
   var sheet = getSheet(SHEETS.ATTENDANCE);
   if (req.present) {
     if (!findRecord(att, s.id, email)) {
-      sheet.appendRow([s.id, email, new Date(), '', 'instructor']);
+      var now = new Date();
+      sheet.appendRow([s.id, email, now, '', 'instructor']);
+      rememberCheckIn(student.token, s.id, email, now, 'instructor');
       appendLog(email, '', 'attend-marked', '', s.id);
     }
   } else {
@@ -689,9 +714,11 @@ function actionAdminMarkAttendance(req) {
     for (var i = values.length - 1; i >= 1; i--) {
       if (String(values[i][0] || '').trim() === s.id && normalizeEmail(values[i][1]) === email) sheet.deleteRow(i + 1);
     }
+    forgetCheckIn(student.token);
     appendLog(email, '', 'attend-removed', '', s.id);
   }
-  return adminAttendanceView(db, loadAttendance());
+  invalidateSheetCache();
+  return adminAttendanceView(db, loadAttendance(null, true));
 }
 
 function sessionMinutes(value, settings) {
@@ -702,14 +729,130 @@ function sessionMinutes(value, settings) {
 }
 
 // ---------------------------------------------------------------------------
+// Sheet cache
+//
+// Reading a sheet costs the better part of a second, and every attendance tap
+// read five of them, so a class checking in within a minute meant hundreds of
+// reads. The raw cell grids of the sheets that change rarely (Course, Settings,
+// Roster, Sessions, Attendance) are kept in the script cache for
+// SHEET_CACHE_SECONDS. Every action that writes one of them calls
+// invalidateSheetCache(), which bumps a generation stamp; a cached grid carries
+// the stamp it was read under and is ignored once the stamp changes, so even a
+// read that was in flight during a write cannot put stale values back. A grid
+// over CacheService's 100 KB per-value limit is split into chunks, and a sheet
+// too big for SHEET_CACHE_MAX_CHUNKS is read from the Sheet every time. A
+// student's own fresh check-in is remembered separately (rememberCheckIn) so it
+// shows even while the cached Attendance grid predates it.
+// ---------------------------------------------------------------------------
+
+var SHEET_CACHE_SECONDS = 25;
+var SHEET_CACHE_GENERATION_KEY = 'sheet-generation';
+var SHEET_CACHE_CHUNK_BYTES = 80 * 1024; // comfortably under the 100 KB per-value limit
+var SHEET_CACHE_MAX_CHUNKS = 8;          // about 640 KB; a bigger sheet is not cached
+var CHECK_IN_MEMORY_SECONDS = 120;       // must outlast SHEET_CACHE_SECONDS
+var ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function sheetCacheKey(name) { return 'sheet|' + name; }
+function sheetChunkKey(name, id, i) { return 'sheet|' + name + '|' + id + '|' + i; }
+function checkInKey(token) { return 'checkin|' + token; }
+
+/** Call after writing any cached sheet. Also safe to run from the editor after editing the Sheet by hand. */
+function invalidateSheetCache() {
+  CacheService.getScriptCache().put(SHEET_CACHE_GENERATION_KEY, String(Date.now()), 6 * 60 * 60);
+}
+
+/**
+ * The cell grids (header row included) of the named sheets, as getDataRange().getValues() returns
+ * them, from the cache where it can. With fresh=true every sheet is read from the Sheet (and the
+ * cache refilled). extraKeys are other cache entries fetched in the same round trip.
+ * Returns { sheets: { name: grid }, extra: { key: value } }.
+ */
+function sheetValues(names, fresh, extraKeys) {
+  var cache = CacheService.getScriptCache();
+  extraKeys = extraKeys || [];
+  var keys = [SHEET_CACHE_GENERATION_KEY].concat(extraKeys);
+  if (!fresh) keys = keys.concat(names.map(sheetCacheKey));
+  var found = cache.getAll(keys);
+  var gen = found[SHEET_CACHE_GENERATION_KEY] || '0';
+  var extra = {};
+  extraKeys.forEach(function (k) { if (found[k]) extra[k] = found[k]; });
+
+  var sheets = {};
+  var chunked = [];
+  names.forEach(function (name) {
+    var raw = found[sheetCacheKey(name)];
+    if (!raw) return;
+    var nl = raw.indexOf('\n');
+    if (raw.slice(0, nl) !== gen) return; // read before the last write
+    var body = raw.slice(nl + 1);
+    if (body.charAt(0) === '#') { // "#<id> <count>": the grid is in chunk entries
+      var parts = body.slice(1).split(' ');
+      var chunkKeys = [];
+      for (var i = 0; i < parseInt(parts[1], 10); i++) chunkKeys.push(sheetChunkKey(name, parts[0], i));
+      chunked.push({ name: name, keys: chunkKeys });
+    } else {
+      sheets[name] = parseGrid(body);
+    }
+  });
+  if (chunked.length) {
+    var pieces = cache.getAll(chunked.reduce(function (all, c) { return all.concat(c.keys); }, []));
+    chunked.forEach(function (c) {
+      if (c.keys.every(function (k) { return pieces[k]; })) {
+        sheets[c.name] = parseGrid(c.keys.map(function (k) { return pieces[k]; }).join(''));
+      }
+    });
+  }
+
+  var toPut = {};
+  names.forEach(function (name) {
+    if (sheets[name]) return;
+    sheets[name] = getSheet(name).getDataRange().getValues();
+    stageGrid(toPut, gen, name, sheets[name]);
+  });
+  if (Object.keys(toPut).length) {
+    try { cache.putAll(toPut, SHEET_CACHE_SECONDS); } catch (err) { /* a refused cache write only costs speed */ }
+  }
+  return { sheets: sheets, extra: extra };
+}
+
+function stageGrid(toPut, gen, name, grid) {
+  var json = JSON.stringify(grid);
+  var bytes = Utilities.newBlob(json).getBytes().length;
+  if (bytes <= SHEET_CACHE_CHUNK_BYTES) { toPut[sheetCacheKey(name)] = gen + '\n' + json; return; }
+  var count = Math.ceil(bytes / SHEET_CACHE_CHUNK_BYTES);
+  if (count > SHEET_CACHE_MAX_CHUNKS) return;
+  var id = Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+  var size = Math.ceil(json.length / count);
+  for (var i = 0; i < count; i++) toPut[sheetChunkKey(name, id, i)] = json.slice(i * size, (i + 1) * size);
+  toPut[sheetCacheKey(name)] = gen + '\n#' + id + ' ' + count;
+}
+
+/** JSON turns Dates into ISO strings; turn them back so a cached grid behaves like a fresh one. */
+function parseGrid(json) {
+  return JSON.parse(json, function (k, v) { return typeof v === 'string' && ISO_DATE_RE.test(v) ? new Date(v) : v; });
+}
+
+/** Remember a student's own check-in for long enough to outlast the cached Attendance grid. */
+function rememberCheckIn(token, sessionId, email, time, by) {
+  if (!token) return;
+  var value = JSON.stringify({ sessionId: sessionId, email: email, time: time.toISOString(), by: by });
+  CacheService.getScriptCache().put(checkInKey(token), value, CHECK_IN_MEMORY_SECONDS);
+}
+
+function forgetCheckIn(token) {
+  if (token) CacheService.getScriptCache().remove(checkInKey(token));
+}
+
+// ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
 
 /** Course, settings and roster only: enough for attendance, and a third of the reads of loadDb(). */
-function loadCore() {
-  var course = readKeyValues(SHEETS.COURSE, DEFAULT_COURSE);
-  var settings = readKeyValues(SHEETS.SETTINGS, DEFAULT_SETTINGS);
-  var roster = readRowsWithPositions(SHEETS.ROSTER).map(function (r, i) {
+function loadCore(fresh) {
+  var v = sheetValues([SHEETS.COURSE, SHEETS.SETTINGS, SHEETS.ROSTER], fresh).sheets;
+  var course = keyValuesFrom(v[SHEETS.COURSE], DEFAULT_COURSE);
+  var settings = keyValuesFrom(v[SHEETS.SETTINGS], DEFAULT_SETTINGS);
+  var roster = v[SHEETS.ROSTER].slice(1).map(function (r, i) {
     return {
       row: i + 2,
       email: normalizeEmail(r[0]),
@@ -720,8 +863,9 @@ function loadCore() {
   return { course: course, settings: settings, roster: roster, assignments: [], signups: [] };
 }
 
-function loadDb() {
-  var db = loadCore();
+/** Everything the signup page needs. Course, Settings and Roster may come from the cache unless fresh=true. */
+function loadDb(fresh) {
+  var db = loadCore(fresh);
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   var assignments = readRows(SHEETS.ASSIGNMENTS).map(function (r) {
@@ -766,9 +910,14 @@ function loadDb() {
 }
 
 function readKeyValues(sheetName, defaults) {
+  return keyValuesFrom(getSheet(sheetName).getDataRange().getValues(), defaults);
+}
+
+/** Defaults overlaid with the key | value rows of a grid. */
+function keyValuesFrom(grid, defaults) {
   var out = {};
   Object.keys(defaults).forEach(function (k) { out[k] = defaults[k]; });
-  readRows(sheetName).forEach(function (r) {
+  rowsFrom(grid).forEach(function (r) {
     var key = String(r[0] || '').trim();
     if (key) out[key] = r[1] instanceof Date ? r[1].toISOString() : String(r[1] == null ? '' : r[1]).trim();
   });
@@ -776,15 +925,14 @@ function readKeyValues(sheetName, defaults) {
 }
 
 function readRows(name) {
-  var values = getSheet(name).getDataRange().getValues();
-  return values.slice(1).filter(function (r) {
-    return r.some(function (c) { return c !== '' && c !== null && c !== undefined; });
-  });
+  return rowsFrom(getSheet(name).getDataRange().getValues());
 }
 
-/** Like readRows but keeps blank rows so each row's position in the sheet is known. */
-function readRowsWithPositions(name) {
-  return getSheet(name).getDataRange().getValues().slice(1);
+/** A grid's rows after the header, without blank rows. */
+function rowsFrom(grid) {
+  return grid.slice(1).filter(function (r) {
+    return r.some(function (c) { return c !== '' && c !== null && c !== undefined; });
+  });
 }
 
 function getSheet(name) {
@@ -982,6 +1130,7 @@ function addAttendanceSheets() {
   ensureSheet(ss, SHEETS.SESSIONS, SESSION_HEADERS, []);
   ensureSheet(ss, SHEETS.ATTENDANCE, ATTENDANCE_HEADERS, []);
   if (ss.getSheetByName(SHEETS.SETTINGS)) addMissingSettings();
+  invalidateSheetCache();
 }
 
 /** For every row in Assignments, create the groups tab (named by the id) if it does not exist yet. */
@@ -1017,6 +1166,7 @@ function addMissingSettings() {
   Object.keys(DEFAULT_SETTINGS).forEach(function (k) {
     if (present.indexOf(k) < 0) { sheet.appendRow([k, k === 'ADMIN_KEY' ? newToken() : DEFAULT_SETTINGS[k]]); added++; }
   });
+  invalidateSheetCache();
   Logger.log('Added ' + added + ' setting(s).');
 }
 
@@ -1032,6 +1182,7 @@ function generateTokens() {
       count++;
     }
   }
+  invalidateSheetCache();
   Logger.log('Generated ' + count + ' token(s).');
 }
 
