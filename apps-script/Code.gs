@@ -114,8 +114,10 @@ function handleRequest(req) {
       case 'join':     return withLock(function () { return actionJoin(req); });
       case 'leave':    return withLock(function () { return actionLeave(req); });
       case 'export':   return actionExport(req);
+      // Check-ins take no lock: a whole class taps within a minute, and each append is independent.
+      // A double tap can produce two rows; loadAttendance() keeps the first.
       case 'attendState': return actionAttendState(req);
-      case 'attend':   return withLock(function () { return actionAttend(req); });
+      case 'attend':   return actionAttend(req);
       case 'adminAttendance':      return requireAdmin(req, actionAdminAttendance);
       case 'adminStartSession':    return requireAdmin(req, function (r) { return withLock(function () { return actionAdminStartSession(r); }); });
       case 'adminCloseSession':    return requireAdmin(req, function (r) { return withLock(function () { return actionAdminCloseSession(r); }); });
@@ -460,6 +462,7 @@ function loadAttendance() {
   }).filter(function (s) { return s.id; });
   sessions.forEach(function (s) { s.open = isSessionOpen(s); });
 
+  var seen = {};
   var records = readRows(SHEETS.ATTENDANCE).map(function (r) {
     return {
       sessionId: String(r[0] || '').trim(),
@@ -468,7 +471,13 @@ function loadAttendance() {
       device: String(r[3] || '').trim(),
       by: String(r[4] || '').trim() || 'student'
     };
-  }).filter(function (r) { return r.sessionId && r.email; });
+  }).filter(function (r) {
+    if (!r.sessionId || !r.email) return false;
+    var key = r.sessionId + '|' + r.email;
+    if (seen[key]) return false; // one check-in per student per session; the first wins
+    seen[key] = true;
+    return true;
+  });
 
   return { sessions: sessions, records: records };
 }
@@ -513,13 +522,13 @@ function attendStateFor(db, me, att) {
 }
 
 function actionAttendState(req) {
-  var db = loadDb();
+  var db = loadCore();
   var me = req.token ? findByToken(db, req.token) : null;
   return attendStateFor(db, me, loadAttendance());
 }
 
 function actionAttend(req) {
-  var db = loadDb();
+  var db = loadCore();
   var me = findByToken(db, req.token);
   if (!me) return { ok: false, error: 'Your link is not recognised. Ask the instructor for a new one.' };
 
@@ -535,6 +544,7 @@ function actionAttend(req) {
   }
   var code = String(req.code || '').replace(/\D/g, '');
   if (code !== open.code) {
+    recordWrongCode(me.email, open.id, wrong + 1);
     appendLog(me.email, '', 'attend-wrong', '', open.id);
     var left = ATTENDANCE_MAX_WRONG_CODES - wrong - 1;
     return { ok: false, error: left > 0
@@ -543,20 +553,30 @@ function actionAttend(req) {
   }
 
   var device = String(req.device || '').trim();
-  getSheet(SHEETS.ATTENDANCE).appendRow([open.id, me.email, new Date(), device ? shortHash(device) : '', 'student']);
+  var now = new Date();
+  getSheet(SHEETS.ATTENDANCE).appendRow([open.id, me.email, now, device ? shortHash(device) : '', 'student']);
   appendLog(me.email, '', 'attend', '', open.id);
-  return attendStateFor(db, me, loadAttendance());
+  att.records.push({ sessionId: open.id, email: me.email, time: now, device: device, by: 'student' });
+  return attendStateFor(db, me, att);
 }
 
+/**
+ * Wrong-code attempts per student per session live in the script cache (fast, expires after six
+ * hours) rather than being counted from the Log sheet on every tap. The Log still records them.
+ */
+function wrongCodeKey(email, sessionId) { return 'wrong|' + sessionId + '|' + email; }
+
 function countWrongCodes(email, sessionId) {
-  return readRows(SHEETS.LOG).filter(function (r) {
-    return normalizeEmail(r[1]) === email && String(r[3]) === 'attend-wrong' && String(r[5] || '').trim() === sessionId;
-  }).length;
+  return parseInt(CacheService.getScriptCache().get(wrongCodeKey(email, sessionId)), 10) || 0;
+}
+
+function recordWrongCode(email, sessionId, count) {
+  CacheService.getScriptCache().put(wrongCodeKey(email, sessionId), String(count), 6 * 60 * 60);
 }
 
 /** Everything the instructor's Attendance tab shows: sessions, check-ins with same-phone flags, and the roster. */
 function actionAdminAttendance(req) {
-  return adminAttendanceView(loadDb(), loadAttendance());
+  return adminAttendanceView(loadCore(), loadAttendance());
 }
 
 function adminAttendanceView(db, att, extra) {
@@ -606,7 +626,7 @@ function adminAttendanceView(db, att, extra) {
 
 /** Start a session: any session still open is closed first, so one class code is live at a time. */
 function actionAdminStartSession(req) {
-  var db = loadDb();
+  var db = loadCore();
   var att = loadAttendance();
   var sheet = getSheet(SHEETS.SESSIONS);
   var now = new Date();
@@ -630,12 +650,12 @@ function actionAdminCloseSession(req) {
   if (!s) return { ok: false, error: 'That session does not exist.' };
   if (!s.closedAt) getSheet(SHEETS.SESSIONS).getRange(s.row, 6).setValue(new Date());
   appendLog('', '', 'admin-session-close', '', s.id);
-  return adminAttendanceView(loadDb(), loadAttendance());
+  return adminAttendanceView(loadCore(), loadAttendance());
 }
 
 /** Keep an open session open for longer, or reopen a closed one for a few more minutes. */
 function actionAdminExtendSession(req) {
-  var db = loadDb();
+  var db = loadCore();
   var att = loadAttendance();
   var s = findSession(att, req.sessionId);
   if (!s) return { ok: false, error: 'That session does not exist.' };
@@ -651,7 +671,7 @@ function actionAdminExtendSession(req) {
 
 /** Mark a student present (for example, their phone died) or remove their check-in. */
 function actionAdminMarkAttendance(req) {
-  var db = loadDb();
+  var db = loadCore();
   var att = loadAttendance();
   var s = findSession(att, req.sessionId);
   if (!s) return { ok: false, error: 'That session does not exist.' };
@@ -685,9 +705,23 @@ function sessionMinutes(value, settings) {
 // Data model
 // ---------------------------------------------------------------------------
 
-function loadDb() {
+/** Course, settings and roster only: enough for attendance, and a third of the reads of loadDb(). */
+function loadCore() {
   var course = readKeyValues(SHEETS.COURSE, DEFAULT_COURSE);
   var settings = readKeyValues(SHEETS.SETTINGS, DEFAULT_SETTINGS);
+  var roster = readRowsWithPositions(SHEETS.ROSTER).map(function (r, i) {
+    return {
+      row: i + 2,
+      email: normalizeEmail(r[0]),
+      name: String(r[1] || '').trim(),
+      token: String(r[2] || '').trim()
+    };
+  }).filter(function (r) { return r.email; });
+  return { course: course, settings: settings, roster: roster, assignments: [], signups: [] };
+}
+
+function loadDb() {
+  var db = loadCore();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   var assignments = readRows(SHEETS.ASSIGNMENTS).map(function (r) {
@@ -719,16 +753,8 @@ function loadDb() {
     }).filter(function (g) { return g.id; });
   });
 
-  var roster = readRowsWithPositions(SHEETS.ROSTER).map(function (r, i) {
-    return {
-      row: i + 2,
-      email: normalizeEmail(r[0]),
-      name: String(r[1] || '').trim(),
-      token: String(r[2] || '').trim()
-    };
-  }).filter(function (r) { return r.email; });
-
-  var signups = readRows(SHEETS.SIGNUPS).map(function (r) {
+  db.assignments = assignments;
+  db.signups = readRows(SHEETS.SIGNUPS).map(function (r) {
     return {
       email: normalizeEmail(r[0]),
       assignment: String(r[1] || '').trim(),
@@ -736,8 +762,7 @@ function loadDb() {
       updated: r[3]
     };
   }).filter(function (s) { return s.email && s.assignment && s.groupId; });
-
-  return { course: course, settings: settings, assignments: assignments, roster: roster, signups: signups };
+  return db;
 }
 
 function readKeyValues(sheetName, defaults) {
