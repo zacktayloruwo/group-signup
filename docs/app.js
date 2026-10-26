@@ -585,7 +585,16 @@
 
     var myGroupId = me ? me.selections[a.id] : null;
 
-    a.groups.forEach(function (g) {
+    // Full groups first, then partly filled by how many are in them, then empty; names break ties.
+    function fillRank(g) {
+      if (g.slots > 0 && g.filled >= g.slots) return 2;
+      return g.filled > 0 ? 1 : 0;
+    }
+    var groups = a.groups.slice().sort(function (p, q) {
+      return (fillRank(q) - fillRank(p)) || (q.filled - p.filled) || p.name.localeCompare(q.name);
+    });
+
+    groups.forEach(function (g) {
       var mine = myGroupId === g.id;
       var unlimited = !g.slots || g.slots <= 0;
       var full = !unlimited && g.filled >= g.slots;
