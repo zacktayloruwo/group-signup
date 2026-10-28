@@ -427,6 +427,7 @@ label.inline select {
 }
 td.present { color: var(--ok); font-weight: 600; }
 td.absent { color: var(--muted); }
+tr.missing td:first-child, tr.missing td:nth-child(2) { color: var(--warn); font-weight: 600; }
 td.flag { color: var(--warn); white-space: normal; }
 
 .hint { color: var(--muted); font-weight: 400; font-size: 0.9rem; }

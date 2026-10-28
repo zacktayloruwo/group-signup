@@ -6,7 +6,7 @@
   <title>Group Signup</title>
   <meta name="description" content="Choose your groups for course assignments.">
   <meta name="robots" content="noindex">
-  <link rel="stylesheet" href="styles.css?v=20261026a">
+  <link rel="stylesheet" href="styles.css?v=20261028a">
 </head>
 <body>
   <div id="demo-banner" class="banner" hidden>
@@ -82,6 +82,11 @@
           <button type="button" id="admin-refresh" class="button">Refresh</button>
         </div>
         <p id="admin-summary" class="hint"></p>
+        <div class="admin-actions">
+          <label class="checkbox"><input type="checkbox" id="admin-only-missing"> Only students without a group</label>
+          <button type="button" id="admin-copy-missing" class="button">Copy emails of students without a group</button>
+          <span id="admin-copy-missing-note" class="hint"></span>
+        </div>
         <div class="table-wrap">
           <table id="admin-table">
             <thead><tr><th>Email</th><th>Name</th><th>Group</th><th>Updated</th></tr></thead>
@@ -133,7 +138,7 @@
     </div>
   </dialog>
 
-  <script src="config.js?v=20261026a"></script>
-  <script src="app.js?v=20261026a"></script>
+  <script src="config.js?v=20261028a"></script>
+  <script src="app.js?v=20261028a"></script>
 </body>
 </html>

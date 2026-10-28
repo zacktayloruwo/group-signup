@@ -44,7 +44,7 @@ the site, which writes to the same Sheet. The panel has five tabs:
 
 | Tab | What you edit |
 |---|---|
-| **Signups** | Who is in which group for the assignment on screen, with CSV downloads. |
+| **Signups** | Who is in which group for the assignment on screen, with CSV downloads. Students without a group are listed first and counted; a checkbox shows only them, and a button copies their email addresses for a reminder. |
 | **Course & settings** | Course name, code, year, term, section, professor; whether signup is open; find-your-name and open enrollment; how names are shown; the site URL; the link email's sender name, reply-to, subject, and signature; and the default attendance window. |
 | **Assignments & groups** | Add, edit, or remove assignments (name, due date, signup close, open flag, instructions) and the groups in each (id, name, slots, description). "Add several…" takes one group per line. |
 | **Roster** | Paste `email, name` lines straight from a spreadsheet. Existing students keep their links. Tick "Remove students not listed" to drop people. |

@@ -1228,33 +1228,58 @@
     }
 
     function renderAdmin() {
-      renderSignups(admin.data);
+      renderSignups();
       renderCourseForm(admin.config);
       admin.assignments = JSON.parse(JSON.stringify(admin.config.assignments));
       renderAssignmentsEditor();
       renderRoster(admin.config);
     }
 
-    function renderSignups(data) {
+    /** Rows of the export for the assignment on screen: students without a group first, then by name. */
+    function signupRows() {
+      if (!admin.data) return [];
+      return admin.data.rows.slice(1)
+        .filter(function (r) { return r[2] === assignmentId; })
+        .sort(function (p, q) { return (!!p[4] - !!q[4]) || String(p[1]).localeCompare(String(q[1])); });
+    }
+
+    function renderSignups() {
       var a = findAssignment(assignmentId);
-      var rows = data.rows.slice(1).filter(function (r) { return r[2] === assignmentId; });
+      var rows = signupRows();
+      var missing = rows.filter(function (r) { return !r[4]; });
+      var onlyMissing = $('#admin-only-missing').checked;
       var tbody = $('#admin-table tbody');
       tbody.textContent = '';
-      rows.forEach(function (r) {
+      (onlyMissing ? missing : rows).forEach(function (r) {
         var tr = document.createElement('tr');
-        [r[0], r[1], r[5] || '—', r[6] || ''].forEach(function (c) {
+        if (!r[4]) tr.className = 'missing';
+        [r[0], r[1], r[5] || 'No group yet', r[6] || ''].forEach(function (c, i) {
           var td = document.createElement('td');
           td.textContent = c;
+          if (i === 2 && !r[4]) td.className = 'absent';
           tr.appendChild(td);
         });
         tbody.appendChild(tr);
       });
-      var chosen = rows.filter(function (r) { return r[4]; }).length;
       var perGroup = a ? a.groups.map(function (g) {
         return g.name + ': ' + g.filled + (g.slots > 0 ? '/' + g.slots : '');
       }).join(' · ') : '';
-      $('#admin-summary').textContent = (a ? a.name + ' — ' : '') + rows.length + ' on roster, ' + chosen + ' have chosen. ' + perGroup;
+      $('#admin-summary').textContent = (a ? a.name + ' — ' : '') + rows.length + ' on roster, ' +
+        (rows.length - missing.length) + ' have chosen, ' + missing.length + ' have not. ' + perGroup;
+      $('#admin-copy-missing').disabled = !missing.length;
+      $('#admin-copy-missing').textContent = 'Copy emails of ' + missing.length + ' student' + (missing.length === 1 ? '' : 's') + ' without a group';
     }
+
+    $('#admin-only-missing').addEventListener('change', renderSignups);
+    $('#admin-copy-missing').addEventListener('click', function () {
+      var emails = signupRows().filter(function (r) { return !r[4]; }).map(function (r) { return r[0]; });
+      var note = $('#admin-copy-missing-note');
+      if (!emails.length) return;
+      var text = emails.join(', ');
+      var done = function () { note.textContent = 'Copied ' + emails.length + ' address' + (emails.length === 1 ? '' : 'es') + '. Paste into the To line of an email.'; };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { window.prompt('Copy these addresses:', text); });
+      else window.prompt('Copy these addresses:', text);
+    });
 
     var COURSE_FIELDS = [
       ['COURSE_NAME', 'Course name'], ['COURSE_CODE', 'Course code'], ['YEAR', 'Year'],
